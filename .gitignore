@@ -1,0 +1,76 @@
+# =========================
+# PYTHON
+# =========================
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# =========================
+# NODE / NEXTJS
+# =========================
+node_modules/
+.next/
+out/
+
+# =========================
+# ENV FILES
+# =========================
+.env
+.env.local
+.env.development
+.env.production
+
+# =========================
+# DATABASES
+# =========================
+*.db
+*.sqlite3
+
+# =========================
+# VECTOR DATABASES
+# =========================
+chromadb/
+data/chromadb/
+backend/data/chromadb/
+
+# =========================
+# UPLOADS
+# =========================
+uploads/
+
+# =========================
+# LOGS
+# =========================
+logs/
+*.log
+
+# =========================
+# OS / EDITOR
+# =========================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# =========================
+# CACHE
+# =========================
+.cache/
+.pytest_cache/
+.mypy_cache/
+
+# =========================
+# LARGE DATASETS
+# =========================
+Student Learning Resources data/
+backend/data/raw/
+backend/data/processed/
