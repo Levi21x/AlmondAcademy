@@ -63,6 +63,17 @@ export interface TodayPlan {
   today: PlanDay | null;
 }
 
+export interface PlanStatus {
+  has_plan: boolean;
+  missed_days: number;
+  past_days: number;
+  on_track_percentage: number;
+  replan_recommended: boolean;
+  reason: string;
+  exam_name?: string;
+  days_remaining?: number;
+}
+
 export interface CreateExamPayload {
   exam_name: string;
   exam_date: string;
@@ -172,5 +183,44 @@ export async function getTodayPlan(token: string): Promise<TodayPlan> {
   }
 
   const payload = (await res.json()) as ApiEnvelope<TodayPlan>;
+  return payload.data;
+}
+
+export async function getPlanStatus(token: string, examId: string): Promise<PlanStatus> {
+  const res = await fetch(`${apiBase}/api/v1/planner/exams/${examId}/status`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!res.ok) {
+    throw new Error("Failed to fetch plan status");
+  }
+
+  const payload = (await res.json()) as ApiEnvelope<PlanStatus>;
+  return payload.data;
+}
+
+export async function replanPlan(token: string, examId: string, hoursPerDay?: number): Promise<StudyPlan> {
+  const res = await fetch(`${apiBase}/api/v1/planner/exams/${examId}/replan`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(hoursPerDay ? { available_hours_per_day: hoursPerDay } : {}),
+  });
+
+  if (!res.ok) {
+    let message = "Failed to replan";
+    try {
+      const payload = await res.json();
+      message = payload?.detail?.message ?? payload?.message ?? message;
+    } catch {
+      // Keep fallback message.
+    }
+    throw new Error(message);
+  }
+
+  const payload = (await res.json()) as ApiEnvelope<StudyPlan>;
   return payload.data;
 }

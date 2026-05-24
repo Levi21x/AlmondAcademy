@@ -3,14 +3,12 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Literal
 
-from app.services.llm.openrouter_client import OpenRouterLLMClient, OPENROUTER_MODELS
+from app.services.llm.openrouter_client import generate_with_fallback_sync
 
 VisualType = Literal["flowchart", "timeline", "comparison", "decision_tree", "mind_map", "process"]
 
 
 class VisualGenerator:
-    def __init__(self) -> None:
-        self.llm = OpenRouterLLMClient(OPENROUTER_MODELS["default"])
 
     def _strip_json(self, raw: str) -> Dict[str, Any]:
         text = (raw or "").strip()
@@ -193,7 +191,7 @@ JSON schema:
         prompt = self._prompt_for_type(visual_type=visual_type, topic=topic, subject=subject)
         system_prompt = "You are AlmondAI Visual Engine. Return only strict JSON exactly matching the requested schema."
 
-        raw = await self.llm.generate_sync(prompt=prompt, system_prompt=system_prompt)
+        raw = await generate_with_fallback_sync(prompt=prompt, system_prompt=system_prompt, tier="default")
         parsed = self._strip_json(raw)
 
         if not parsed:
@@ -202,7 +200,7 @@ JSON schema:
                 "Do not add new sections. Keep it concise and exam-focused.\n\n"
                 f"Original response:\n{raw}"
             )
-            repaired = await self.llm.generate_sync(prompt=repair_prompt, system_prompt=system_prompt)
+            repaired = await generate_with_fallback_sync(prompt=repair_prompt, system_prompt=system_prompt, tier="default")
             parsed = self._strip_json(repaired)
 
         if not parsed:

@@ -21,8 +21,16 @@ const tierColors: Record<string, { bg: string; text: string; border: string; emo
   platinum: { bg: "rgba(213,197,168,0.12)", text: "#d5c5a8", border: "rgba(213,197,168,0.35)", emoji: "💎" },
 };
 
+function initialYearFilter(year: number | null | undefined): "all" | "year1" | "year2" | "year3plus" {
+  if (year === 1) return "year1";
+  if (year === 2) return "year2";
+  if (year && year >= 3) return "year3plus";
+  return "all";
+}
+
 export default function ProgressPage() {
   const token = useAuthStore((state) => state.accessToken);
+  const profile = useAuthStore((state) => state.profile);
   const router = useRouter();
 
   const [, setLoading] = useState(true);
@@ -31,7 +39,9 @@ export default function ProgressPage() {
   const [weekly, setWeekly] = useState<WeeklyData | null>(null);
   const [subjects, setSubjects] = useState<SubjectProgress[]>([]);
   const [achievements, setAchievements] = useState<AchievementsCatalog | null>(null);
-  const [yearFilter, setYearFilter] = useState<"all" | "year1" | "year2" | "year3plus">("all");
+  const [yearFilter, setYearFilter] = useState<"all" | "year1" | "year2" | "year3plus">(() =>
+    initialYearFilter(profile?.current_year),
+  );
   const [subjectHover, setSubjectHover] = useState<string | null>(null);
 
   useEffect(() => {

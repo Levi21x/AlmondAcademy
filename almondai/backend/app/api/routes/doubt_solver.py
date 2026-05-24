@@ -42,6 +42,127 @@ MASTERY_SIGNAL_PATTERNS = [
     r"\bready\s+for\s+(?:mcq|practice|questions?)\b",
 ]
 
+# Agentic in-chat actions: the tutor may emit [ACTION:...] markers the app turns into
+# confirm-chips. Markers are filtered out of the visible stream and validated server-side
+# before any action event is emitted. See _ActionMarkerStreamFilter / _validate_action_markers.
+ACTION_MARKER_SENTINEL = "[ACTION:"
+ACTION_MARKER_RE = re.compile(r"\[ACTION:([a-zA-Z_]+)(?::([^\]]*))?\]")
+ACTION_EVENT_PREFIX = "[ALMOND_ACTION:"
+ALLOWED_VISUAL_TYPES = {"flowchart", "mind_map", "decision_tree"}
+
+
+class _ActionMarkerStreamFilter:
+    """Withholds any text that could be part of an ``[ACTION:...]`` marker so markers
+    never reach the user, while emitting all other text as soon as it is provably safe.
+
+    ``feed()`` returns the safe-to-display text for a chunk; complete markers are collected
+    in ``captured``. ``flush()`` returns any trailing safe text at end of stream (an
+    incomplete marker prefix is dropped).
+    """
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self.captured: List[str] = []
+
+    def feed(self, chunk: str) -> str:
+        self._buffer += chunk
+        emit: List[str] = []
+
+        while self._buffer:
+            idx = self._buffer.find("[")
+            if idx == -1:
+                emit.append(self._buffer)
+                self._buffer = ""
+                break
+
+            if idx > 0:
+                emit.append(self._buffer[:idx])
+                self._buffer = self._buffer[idx:]
+
+            # self._buffer now starts with '['
+            if len(self._buffer) < len(ACTION_MARKER_SENTINEL):
+                # Not enough chars to decide — withhold only if still a viable prefix.
+                if ACTION_MARKER_SENTINEL.startswith(self._buffer):
+                    break
+                emit.append("[")
+                self._buffer = self._buffer[1:]
+                continue
+
+            if self._buffer.startswith(ACTION_MARKER_SENTINEL):
+                close = self._buffer.find("]")
+                if close == -1:
+                    break  # marker not yet complete — withhold
+                self.captured.append(self._buffer[: close + 1])
+                self._buffer = self._buffer[close + 1 :]
+                continue
+
+            # '[' not starting a marker — emit it and keep scanning.
+            emit.append("[")
+            self._buffer = self._buffer[1:]
+
+        return "".join(emit)
+
+    def flush(self) -> str:
+        remaining = self._buffer
+        self._buffer = ""
+        # A leftover that is (a prefix of) the sentinel is an incomplete marker → drop it.
+        if remaining.startswith(ACTION_MARKER_SENTINEL) or ACTION_MARKER_SENTINEL.startswith(remaining):
+            return ""
+        return remaining
+
+
+def _validate_action_markers(client, markers: List[str], fallback_subject: Optional[str]) -> List[Dict[str, Any]]:
+    """Parse captured ``[ACTION:...]`` markers into validated, de-duplicated action dicts.
+
+    Markers that reference an unknown verb, subject, or topic are dropped — so a free
+    model that hallucinates an action simply produces no chip. Capped at 2 suggestions.
+    """
+    actions: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for raw in markers:
+        match = ACTION_MARKER_RE.search(raw)
+        if not match:
+            continue
+        verb = (match.group(1) or "").strip().lower()
+        arg = (match.group(2) or "").strip()
+        action: Optional[Dict[str, Any]] = None
+
+        if verb == "replan":
+            action = {"type": "replan", "label": "Replan my schedule"}
+
+        elif verb == "mcq":
+            subject = (arg or (fallback_subject or "")).strip()
+            if subject:
+                rows = client.table("syllabus_subjects").select("name").ilike("name", subject).limit(1).execute().data or []
+                if rows:
+                    canonical = str(rows[0].get("name") or subject)
+                    action = {"type": "mcq", "subject": canonical, "label": f"Practice {canonical} MCQs"}
+
+        elif verb == "mark_done":
+            if arg:
+                rows = client.table("syllabus_topics").select("id,name").ilike("name", f"%{arg}%").limit(1).execute().data or []
+                if rows:
+                    canonical = str(rows[0].get("name") or arg)
+                    action = {"type": "mark_done", "topic": canonical, "topic_id": rows[0].get("id"), "label": f"Mark '{canonical}' complete"}
+
+        elif verb == "visual":
+            parts = [p.strip() for p in arg.split(":", 1)]
+            vtype = parts[0].lower() if parts and parts[0] else ""
+            vtopic = parts[1].strip() if len(parts) > 1 else ""
+            if vtype in ALLOWED_VISUAL_TYPES and vtopic:
+                action = {"type": "visual", "visual_type": vtype, "topic": vtopic, "label": f"Visualise {vtopic}"}
+
+        if not action:
+            continue
+        key = json.dumps(action, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        actions.append(action)
+
+    return actions[:2]
+
 ModelChoice = Literal["auto", "openai", "groq", "gemini", "claude"]
 
 DETAILED_MODEL_SIGNALS = (
@@ -536,6 +657,7 @@ async def ask_question(
             assistant_buffer: List[str] = []
             completed = False
             syllabus_update_topic: str | None = None
+            action_filter = _ActionMarkerStreamFilter()
             try:
                 yield f"data: [SESSION_ID:{session_id}]\n\n"
                 async for chunk in rag_pipeline.process_question(
@@ -552,8 +674,15 @@ async def ask_question(
                     web_search_context=web_search_context,
                     quick_mode=payload.quick_mode,
                 ):
-                    assistant_buffer.append(str(chunk))
-                    yield f"data: {json.dumps(str(chunk))}\n\n"
+                    safe_text = action_filter.feed(str(chunk))
+                    if safe_text:
+                        assistant_buffer.append(safe_text)
+                        yield f"data: {json.dumps(safe_text)}\n\n"
+
+                tail = action_filter.flush()
+                if tail:
+                    assistant_buffer.append(tail)
+                    yield f"data: {json.dumps(tail)}\n\n"
                 completed = True
 
                 full_assistant_response = "".join(assistant_buffer)
@@ -568,6 +697,16 @@ async def ask_question(
                 if syllabus_update_topic:
                     marker = f"{SYLLABUS_UPDATE_MARKER_PREFIX}{syllabus_update_topic}{SYLLABUS_UPDATE_MARKER_SUFFIX}"
                     yield f"data: {json.dumps(marker)}\n\n"
+
+                if action_filter.captured:
+                    try:
+                        suggested_actions = _validate_action_markers(client, action_filter.captured, payload.subject)
+                    except Exception:
+                        logger.exception("Failed to validate tutor action markers")
+                        suggested_actions = []
+                    for suggested_action in suggested_actions:
+                        action_payload = ACTION_EVENT_PREFIX + json.dumps(suggested_action, separators=(",", ":")) + "]"
+                        yield f"data: {json.dumps(action_payload)}\n\n"
 
                 yield "data: [ALMOND_STREAM_END]\n\n"
             except ValueError as exc:

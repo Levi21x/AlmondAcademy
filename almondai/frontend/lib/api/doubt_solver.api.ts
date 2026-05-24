@@ -30,7 +30,17 @@ interface PremiumSessionStatusResponse {
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-export type AskEvent = { type: "chunk" | "session" | "end"; data: string };
+export type TutorAction =
+  | { type: "replan"; label: string }
+  | { type: "mcq"; subject: string; label: string }
+  | { type: "mark_done"; topic: string; topic_id?: string; label: string }
+  | { type: "visual"; visual_type: "flowchart" | "mind_map" | "decision_tree"; topic: string; label: string };
+
+export type AskEvent =
+  | { type: "chunk" | "session" | "end"; data: string }
+  | { type: "action"; action: TutorAction };
+
+const ACTION_EVENT_PREFIX = "[ALMOND_ACTION:";
 
 export async function* askQuestion(params: {
   question: string;
@@ -131,6 +141,18 @@ export async function* askQuestion(params: {
       } catch {
         decodedPayload = payload;
       }
+
+      if (decodedPayload.startsWith(ACTION_EVENT_PREFIX) && decodedPayload.endsWith("]")) {
+        const json = decodedPayload.slice(ACTION_EVENT_PREFIX.length, -1);
+        try {
+          const action = JSON.parse(json) as TutorAction;
+          yield { type: "action", action };
+        } catch {
+          // Malformed action payload — ignore silently.
+        }
+        continue;
+      }
+
       yield { type: "chunk", data: decodedPayload };
     }
   }

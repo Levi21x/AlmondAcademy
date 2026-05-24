@@ -6,28 +6,15 @@ import { Brain, Mic, MicOff, Square, Volume2, VolumeX, ChevronDown } from "lucid
 import { useAuthStore } from "@/lib/store/authStore";
 import { useDeepgramSTT } from "@/lib/hooks/useDeepgramSTT";
 import { useDeepgramTTS } from "@/lib/hooks/useDeepgramTTS";
+import { useSubjectList } from "@/lib/hooks/useSubjectList";
 import { getDeepgramToken, askVoiceQuestion } from "@/lib/api/voice.api";
 import type { VoiceMessage } from "@/lib/api/voice.api";
-
-const SUBJECTS = [
-  "Anatomy",
-  "Physiology",
-  "Biochemistry",
-  "Pathology",
-  "Pharmacology",
-  "Microbiology",
-  "Medicine",
-  "Surgery",
-  "Cardiology",
-  "Community Medicine",
-  "Pediatrics",
-  "Obstetrics and Gynecology",
-];
 
 type VoiceState = "idle" | "listening" | "thinking" | "speaking";
 
 export default function VoiceAgentPage() {
   const token = useAuthStore((state) => state.accessToken);
+  const { subjects: subjectList, loaded: subjectsLoaded } = useSubjectList();
 
   const [deepgramToken, setDeepgramToken] = useState("");
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
@@ -42,6 +29,13 @@ export default function VoiceAgentPage() {
 
   const stt = useDeepgramSTT(deepgramToken);
   const tts = useDeepgramTTS();
+
+  useEffect(() => {
+    if (!subjectsLoaded || subjectList.length === 0) return;
+    if (!subjectList.includes(subject)) {
+      setSubject(subjectList[0]);
+    }
+  }, [subjectsLoaded, subjectList]);
 
   useEffect(() => {
     if (!token) {
@@ -200,7 +194,7 @@ export default function VoiceAgentPage() {
               onChange={(event) => setSubject(event.target.value)}
               className="appearance-none rounded-lg border border-[#4c463d] bg-[#1a1a1a] px-3 py-1.5 pr-8 text-xs text-[#e5e2e1] outline-none"
             >
-              {SUBJECTS.map((item) => (
+              {subjectList.map((item: string) => (
                 <option key={item} value={item}>
                   {item}
                 </option>

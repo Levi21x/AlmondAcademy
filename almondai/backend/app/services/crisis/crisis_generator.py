@@ -4,7 +4,7 @@ from datetime import date, timedelta
 import json
 from typing import Any, Dict, List
 
-from app.services.llm.openrouter_client import OpenRouterLLMClient, OPENROUTER_MODELS
+from app.services.llm.openrouter_client import generate_with_fallback_sync
 
 
 PREP_HINTS = {
@@ -166,12 +166,11 @@ Rules:
 - exam_tip must be specific and actionable
 """
 
-    llm = OpenRouterLLMClient(OPENROUTER_MODELS["default"])
     last_error: Exception | None = None
 
     for _attempt in range(3):
         try:
-            raw = await llm.generate_sync(prompt=user_prompt, system_prompt=system_prompt)
+            raw = await generate_with_fallback_sync(prompt=user_prompt, system_prompt=system_prompt, tier="default")
             parsed = _extract_json(raw)
             if not parsed or not isinstance(parsed.get("days"), list):
                 raise ValueError("Failed to parse crisis plan JSON")

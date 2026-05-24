@@ -73,12 +73,22 @@ function difficultyDot(difficulty: string): string {
 export default function SyllabusPage() {
   const router = useRouter();
   const token = useAuthStore((state) => state.accessToken);
+  const profile = useAuthStore((state) => state.profile);
 
   const [loading, setLoading] = useState(true);
   const [subjects, setSubjects] = useState<SubjectProgress[]>([]);
   const [summary, setSummary] = useState<ProgressSummary | null>(null);
-  const [modeFilter, setModeFilter] = useState<ModeFilter>("all");
-  const [yearFilter, setYearFilter] = useState<YearFilter>("all");
+  const [modeFilter, setModeFilter] = useState<ModeFilter>(() => {
+    if (!profile) return "all";
+    if (profile.mode === "mbbs") return "mbbs";
+    if (profile.mode === "neet_pg") return "neet_pg";
+    return "all";
+  });
+  const [yearFilter, setYearFilter] = useState<YearFilter>(() => {
+    const y = profile?.current_year;
+    if (y && y >= 1 && y <= 4) return y as 1 | 2 | 3 | 4;
+    return "all";
+  });
   const [selectedSubject, setSelectedSubject] = useState<SubjectProgress | null>(null);
   const [topicDetail, setTopicDetail] = useState<SubjectWithTopics | null>(null);
   const [topicLoading, setTopicLoading] = useState(false);

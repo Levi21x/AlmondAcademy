@@ -5,7 +5,7 @@ import json
 from typing import Any, Dict, List
 
 from app.core.database import get_supabase_admin_client
-from app.services.llm.openrouter_client import OpenRouterLLMClient, OPENROUTER_MODELS
+from app.services.llm.openrouter_client import generate_with_fallback_sync
 
 
 class WeaknessAnalyzer:
@@ -185,7 +185,6 @@ class WeaknessAnalyzer:
 
     async def generate_interventions(self, user_id: str, weak_topics: List[Dict[str, Any]], student_category: str) -> List[Dict[str, Any]]:
         _ = user_id
-        llm = OpenRouterLLMClient(OPENROUTER_MODELS["default"])
         interventions: List[Dict[str, Any]] = []
 
         for row in weak_topics[:10]:
@@ -219,9 +218,10 @@ Return a JSON object:
 """
 
             try:
-                raw = await llm.generate_sync(
+                raw = await generate_with_fallback_sync(
                     prompt=prompt,
                     system_prompt="Return only strict JSON for intervention planning.",
+                    tier="default",
                 )
                 parsed = self._extract_json(raw)
             except Exception:

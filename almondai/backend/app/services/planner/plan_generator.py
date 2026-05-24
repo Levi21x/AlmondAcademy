@@ -4,7 +4,7 @@ import json
 from datetime import date, datetime
 from typing import Any, Dict, List
 
-from app.services.llm.openrouter_client import OpenRouterLLMClient, OPENROUTER_MODELS
+from app.services.llm.openrouter_client import generate_with_fallback_sync
 
 
 def _extract_percentage(subject: Dict[str, Any]) -> float:
@@ -61,8 +61,10 @@ async def generate_study_plan(
 ) -> Dict[str, Any]:
     today = date.today()
     days_remaining = (exam_date - today).days
-    if days_remaining < 1:
-        raise ValueError("Exam date must be at least 1 day in the future")
+    if days_remaining < 0:
+        raise ValueError(f"Exam date {exam_date.isoformat()} is in the past. Update your exam date to generate a plan.")
+    if days_remaining == 0:
+        days_remaining = 1  # Today counts as one study day.
 
     weak_subjects: List[str] = []
     medium_subjects: List[str] = []
@@ -170,8 +172,9 @@ Rules:
   strategic_climber: NEET-PG high yield prioritized
 """.strip()
 
-    llm = OpenRouterLLMClient(OPENROUTER_MODELS["default"])
-    response_text = (await llm.generate_sync(prompt=user_prompt, system_prompt=system_prompt)).strip()
+    response_text = (await generate_with_fallback_sync(
+        prompt=user_prompt, system_prompt=system_prompt, tier="default"
+    )).strip()
 
     try:
         plan = _parse_json_response(response_text)
@@ -208,7 +211,9 @@ Use this structure exactly:
 Generate all {days_remaining} days for exam {exam_name}, student type {student_category}.
 IMPORTANT: Only generate topics for these subjects: {selected_subjects}. Do not include any other subjects.
 """.strip()
-        second = (await llm.generate_sync(prompt=retry_prompt, system_prompt=system_prompt)).strip()
+        second = (await generate_with_fallback_sync(
+            prompt=retry_prompt, system_prompt=system_prompt, tier="default"
+        )).strip()
         plan = _parse_json_response(second)
 
     if "days" not in plan or not isinstance(plan["days"], list):

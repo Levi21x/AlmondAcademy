@@ -3,14 +3,20 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import Link from "next/link";
 import {
+  AlertTriangle,
   Brain,
   Calendar,
+  CalendarClock,
   ChevronDown,
   ChevronUp,
   Clock3,
+  LayoutList,
   Loader2,
+  Network,
   Plus,
+  RefreshCw,
   Sparkles,
+  Target,
   Trash2,
   X,
 } from "lucide-react";
@@ -24,13 +30,19 @@ import {
   generatePlan,
   getExams,
   getPlan,
+  getPlanStatus,
+  getTodayPlan,
+  replanPlan,
   type CreateExamPayload,
   type ExamType,
   type PlanDay,
+  type PlanStatus,
   type PlanTopic,
   type StudyPlan,
   type StudentExam,
+  type TodayPlan,
 } from "@/lib/api/planner.api";
+import { PlanGraph } from "@/components/graph/PlanGraph";
 import { getSubjects } from "@/lib/api/syllabus.api";
 import { useProfile } from "@/lib/hooks/useProfile";
 import { useSubscription } from "@/lib/hooks/useSubscription";
@@ -105,6 +117,13 @@ export default function PlannerPage() {
   const [error, setError] = useState<string | null>(null);
   const [showUpgradePrompt, setShowUpgradePrompt] = useState(true);
 
+  const [todayPlan, setTodayPlan] = useState<TodayPlan | null>(null);
+  const [nearestStatus, setNearestStatus] = useState<PlanStatus | null>(null);
+  const [nearestPlanExamId, setNearestPlanExamId] = useState<string | null>(null);
+  const [replanningExamId, setReplanningExamId] = useState<string | null>(null);
+  const [replanDismissed, setReplanDismissed] = useState(false);
+  const [planView, setPlanView] = useState<"list" | "map">("list");
+
   const [form, setForm] = useState<CreateExamPayload>({
     exam_name: "",
     exam_date: "",
@@ -129,13 +148,78 @@ export default function PlannerPage() {
     void Promise.all([getExams(token), getSubjects(token)])
       .then(([examRows, subjectRows]) => {
         setExams(examRows);
-        setSubjects(subjectRows.map((subject) => subject.name));
+        const profileData = useAuthStore.getState().profile;
+        const year = profileData?.current_year;
+        const filtered = (year && year >= 1 && year <= 4)
+          ? subjectRows.filter((s) => s.year === year)
+          : subjectRows;
+        setSubjects(filtered.map((subject) => subject.name));
       })
       .catch(() => {
         setError("Failed to load planner data.");
       })
       .finally(() => setLoading(false));
   }, [token]);
+
+  // Autonomous manager: on planner open, surface today's focus and check the
+  // nearest active plan for drift (client-triggered — free tier has no server cron).
+  useEffect(() => {
+    if (!token) {
+      return;
+    }
+    let cancelled = false;
+
+    const nearestWithPlan = exams.find((exam) => exam.has_active_plan && !exam.is_past) ?? null;
+
+    void getTodayPlan(token)
+      .then((data) => {
+        if (!cancelled) setTodayPlan(data);
+      })
+      .catch(() => {
+        if (!cancelled) setTodayPlan(null);
+      });
+
+    if (nearestWithPlan) {
+      setNearestPlanExamId(nearestWithPlan.id);
+      void getPlanStatus(token, nearestWithPlan.id)
+        .then((status) => {
+          if (!cancelled) setNearestStatus(status);
+        })
+        .catch(() => {
+          if (!cancelled) setNearestStatus(null);
+        });
+    } else {
+      setNearestPlanExamId(null);
+      setNearestStatus(null);
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [token, exams]);
+
+  const onReplan = async (examId: string) => {
+    if (!token) {
+      return;
+    }
+    try {
+      setReplanningExamId(examId);
+      const plan = await replanPlan(token, examId);
+      setPlansByExamId((prev) => ({ ...prev, [examId]: plan }));
+      setExpandedPlanId(examId);
+      setExpandedDays({});
+      setReplanDismissed(false);
+      const [refreshedStatus] = await Promise.all([getPlanStatus(token, examId), refreshExams()]);
+      setNearestStatus(refreshedStatus);
+      const refreshedToday = await getTodayPlan(token);
+      setTodayPlan(refreshedToday);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Replanning failed. Please try again.";
+      setError(msg);
+    } finally {
+      setReplanningExamId(null);
+    }
+  };
 
   const toggleSubject = (subject: string) => {
     setForm((prev) => {
@@ -246,8 +330,9 @@ export default function PlannerPage() {
       setExpandedPlanId(examId);
       setExpandedDays({});
       await refreshExams();
-    } catch {
-      setError("Plan generation failed. Please try again.");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Plan generation failed. Please try again.";
+      setError(msg);
     } finally {
       setGeneratingExamId(null);
     }
@@ -275,6 +360,100 @@ export default function PlannerPage() {
               </button>
             </div>
           </div>
+        </section>
+      ) : null}
+
+      {nearestStatus?.replan_recommended && nearestPlanExamId && !replanDismissed ? (
+        <section className="rounded-xl border border-[#7a5a30] bg-[#241d12] p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-[#e6c87a]" strokeWidth={2} />
+              <div>
+                <p className="text-sm font-semibold text-[#ffe1ad]">You&apos;ve drifted off schedule</p>
+                <p className="mt-0.5 text-xs text-[#cdbb9a]">{nearestStatus.reason}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void onReplan(nearestPlanExamId)}
+                disabled={replanningExamId === nearestPlanExamId}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#d5c5a8] px-3 py-1.5 text-xs font-semibold text-[#2e2618] transition-transform active:translate-y-px disabled:opacity-60"
+              >
+                {replanningExamId === nearestPlanExamId ? <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} /> : <RefreshCw className="h-3.5 w-3.5" strokeWidth={2} />}
+                {replanningExamId === nearestPlanExamId ? "Replanning..." : "Replan now"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setReplanDismissed(true)}
+                className="rounded-lg border border-[#4c463d] px-3 py-1.5 text-xs text-[#cec5b9] transition-colors hover:text-[#fff2de]"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {todayPlan?.has_plan && todayPlan.today ? (
+        <section className="overflow-hidden rounded-2xl border border-[#353534] bg-gradient-to-br from-[#211d17] to-[#161616] p-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2.5">
+                <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-[#d5c5a8]/10 ring-1 ring-[#d5c5a8]/25">
+                  <Target className="h-5 w-5 text-[#d5c5a8]" strokeWidth={2} />
+                </span>
+                <div>
+                  <p className="text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-[#d5c5a8]">Today&apos;s focus</p>
+                  {todayPlan.nearest_exam ? (
+                    <p className="text-xs text-[#b7ada0]">
+                      {todayPlan.nearest_exam.exam_name} • {todayPlan.nearest_exam.days_remaining} days left
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+              <h2 className="mt-3 font-headline text-2xl font-bold text-[#fff2de]">{todayPlan.today.focus}</h2>
+              {todayPlan.today.day_goal ? <p className="mt-1 text-sm text-[#b7ada0]">{todayPlan.today.day_goal}</p> : null}
+            </div>
+            <p className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-[#2a2520] px-3 py-1.5 text-sm text-[#d5c5a8]">
+              <Clock3 className="h-4 w-4" strokeWidth={1.9} />
+              {todayPlan.today.total_hours}h today
+            </p>
+          </div>
+
+          {todayPlan.today.topics.length > 0 ? (
+            <div className="mt-5 grid gap-2.5 sm:grid-cols-2">
+              {todayPlan.today.topics.slice(0, 4).map((topic, idx) => (
+                <button
+                  key={`${topic.topic}-${idx}`}
+                  type="button"
+                  onClick={() => todayPlan.today && handleAskTutor(topic, todayPlan.today)}
+                  className="group flex items-center justify-between gap-3 rounded-xl border border-[#353534] bg-[#1a1a1a] p-3 text-left transition-all hover:border-[#d5c5a8]/45 active:translate-y-px"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-[#e5e2e1]">{topic.topic}</p>
+                    <p className="truncate text-xs text-[#8f887e]">{topic.subject} • {topic.duration_minutes} min</p>
+                  </div>
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[#4c463d] px-2.5 py-1.5 text-xs text-[#cec5b9] transition-colors group-hover:border-[#d5c5a8]/50 group-hover:text-[#fff2de]">
+                    <Brain size={12} strokeWidth={1.9} />
+                    Study
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-5 rounded-xl border border-[#353534] bg-[#1a1a1a] p-3 text-sm text-[#b7ada0]">
+              Revision / buffer day — review your weak areas.
+            </p>
+          )}
+        </section>
+      ) : todayPlan && !todayPlan.has_plan && todayPlan.nearest_exam ? (
+        <section className="rounded-2xl border border-dashed border-[#353534] bg-[#161616] p-6 text-center">
+          <CalendarClock className="mx-auto h-8 w-8 text-[#8f887e]" strokeWidth={1.8} />
+          <p className="mt-3 text-sm text-[#e5e2e1]">
+            {todayPlan.nearest_exam.exam_name} is in {todayPlan.nearest_exam.days_remaining} days
+          </p>
+          <p className="mt-1 text-xs text-[#b7ada0]">Generate a study plan below to unlock your daily focus.</p>
         </section>
       ) : null}
 
@@ -481,7 +660,30 @@ export default function PlannerPage() {
                           ) : null}
 
                           <article className="rounded-xl border border-[#353534] bg-[#1f1f1f] p-5">
-                            <h3 className="font-headline text-2xl font-bold text-[#fff2de]">Full Plan Timeline</h3>
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                              <h3 className="font-headline text-2xl font-bold text-[#fff2de]">Full Plan Timeline</h3>
+                              <div className="inline-flex rounded-lg border border-[#353534] bg-[#131313] p-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => setPlanView("list")}
+                                  className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${planView === "list" ? "bg-[#d5c5a8] text-[#2e2618]" : "text-[#cec5b9] hover:text-[#fff2de]"}`}
+                                >
+                                  <LayoutList className="h-3.5 w-3.5" strokeWidth={2} /> List
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setPlanView("map")}
+                                  className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${planView === "map" ? "bg-[#d5c5a8] text-[#2e2618]" : "text-[#cec5b9] hover:text-[#fff2de]"}`}
+                                >
+                                  <Network className="h-3.5 w-3.5" strokeWidth={2} /> Map
+                                </button>
+                              </div>
+                            </div>
+                            {planView === "map" ? (
+                              <div className="mt-4">
+                                <PlanGraph plan={plan} />
+                              </div>
+                            ) : (
                             <div className="mt-4 max-h-[480px] space-y-2 overflow-auto pr-1">
                               {plan.days.map((day: PlanDay) => {
                                 const isDayExpanded = Boolean(expandedDays[day.day]);
@@ -541,6 +743,7 @@ export default function PlannerPage() {
                                 );
                               })}
                             </div>
+                            )}
                           </article>
 
                           <article className="rounded-xl border border-[#353534] bg-[#1f1f1f] p-5">

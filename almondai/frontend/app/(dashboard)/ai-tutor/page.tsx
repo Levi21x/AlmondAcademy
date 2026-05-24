@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Brain, Menu, PenSquare, Trash2, X } from "lucide-react";
+import { Brain, CheckCircle2, ListChecks, Menu, PenSquare, RefreshCw, Sparkles, Trash2, X } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -10,35 +10,15 @@ import remarkGfm from "remark-gfm";
 import { ChatMessage } from "@/components/doubt-solver/ChatMessage";
 import { Toast, ToastVariant } from "@/components/ui/Toast";
 import { PromptInputBox } from "@/components/ui/ai-prompt-box";
-import { askQuestion, ConversationTurn, getUsageStatus, UsageStatus } from "@/lib/api/doubt_solver.api";
+import { askQuestion, ConversationTurn, getUsageStatus, TutorAction, UsageStatus } from "@/lib/api/doubt_solver.api";
+import { updateTopicProgress } from "@/lib/api/syllabus.api";
 import { ChatSession, createSession, deleteSession, getSession, getSessions } from "@/lib/api/chat_history.api";
 import { getMemoryInsights } from "@/lib/api/memory.api";
 import { useProfile } from "@/lib/hooks/useProfile";
+import { useSubjectList } from "@/lib/hooks/useSubjectList";
 import { useVoiceInput } from "@/lib/hooks/useVoiceInput";
 import { getSupabaseClient } from "@/lib/supabase/client";
 import { useAuthStore } from "@/lib/store/authStore";
-
-const SUBJECTS = [
-  "Anatomy",
-  "Physiology",
-  "Biochemistry",
-  "Pathology",
-  "Pharmacology",
-  "Microbiology",
-  "Forensic Medicine",
-  "Community Medicine",
-  "ENT",
-  "Ophthalmology",
-  "Medicine",
-  "Surgery",
-  "Obstetrics and Gynecology",
-  "Pediatrics",
-  "Orthopedics",
-  "Dermatology",
-  "Psychiatry",
-  "Radiology",
-  "Cardiology",
-];
 
 interface Message {
   id: string;
@@ -46,6 +26,7 @@ interface Message {
   content: string;
   searchUsed?: boolean;
   syllabusUpdatedTopic?: string;
+  actions?: TutorAction[];
 }
 
 interface ToastState {
@@ -192,6 +173,7 @@ export default function AITutorPage() {
   const searchParams = useSearchParams();
   const token = useAuthStore((state) => state.accessToken);
   const { data: profile } = useProfile();
+  const { subjects: subjectList, loaded: subjectsLoaded } = useSubjectList();
 
   const [subject, setSubject] = useState("Cardiology");
   const [usage, setUsage] = useState<UsageStatus | null>(null);
@@ -203,6 +185,7 @@ export default function AITutorPage() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [doneActionKeys, setDoneActionKeys] = useState<Set<string>>(() => new Set());
   const [draftMessage, setDraftMessage] = useState("");
   const [hasPersonalizationMemory, setHasPersonalizationMemory] = useState(false);
   const [lastVoiceTranscript, setLastVoiceTranscript] = useState("");
@@ -286,13 +269,22 @@ export default function AITutorPage() {
   }, [token]);
 
   useEffect(() => {
-    if (!querySubject) {
+    if (!subjectsLoaded || subjectList.length === 0) return;
+    if (!subjectList.includes(subject)) {
+      setSubject(subjectList[0]);
+    }
+  }, [subjectsLoaded, subjectList]);
+
+  useEffect(() => {
+    if (!querySubject || !subjectsLoaded) {
       return;
     }
-    if (SUBJECTS.includes(querySubject)) {
+    if (subjectList.includes(querySubject)) {
       setSubject(querySubject);
+    } else if (subjectList.length > 0) {
+      setSubject(subjectList[0]);
     }
-  }, [querySubject]);
+  }, [querySubject, subjectsLoaded, subjectList]);
 
   useEffect(() => {
     if (modeParam === "high_yield") {
@@ -459,6 +451,7 @@ export default function AITutorPage() {
         abortControllerRef.current = controller;
         let accumulatedContent = "";
         let syllabusUpdatedTopic = "";
+        const collectedActions: TutorAction[] = [];
 
         for await (const ev of askQuestion({
           question,
@@ -472,6 +465,10 @@ export default function AITutorPage() {
         })) {
           if (ev.type === "session") {
             setActiveSessionId(ev.data);
+            continue;
+          }
+          if (ev.type === "action") {
+            collectedActions.push(ev.action);
             continue;
           }
           if (ev.type === "chunk") {
@@ -501,6 +498,7 @@ export default function AITutorPage() {
             content: cleanedAssistant,
             searchUsed: searchWasActive,
             syllabusUpdatedTopic: syllabusUpdatedTopic || undefined,
+            actions: collectedActions.length ? collectedActions : undefined,
           },
         ]);
 
@@ -528,6 +526,38 @@ export default function AITutorPage() {
       }
     },
     [activeSessionId, isSearchMode, isStreaming, limitReached, loadSessions, messages, profile?.mode, refreshUsage, router, sourceParam, subject, token],
+  );
+
+  const handleTutorAction = useCallback(
+    async (action: TutorAction, key: string) => {
+      if (action.type === "replan") {
+        router.push("/planner");
+        return;
+      }
+      if (action.type === "mcq") {
+        router.push(`/practice?subject=${encodeURIComponent(action.subject)}`);
+        return;
+      }
+      if (action.type === "visual") {
+        const params = new URLSearchParams({ topic: action.topic, type: action.visual_type });
+        if (subject) params.set("subject", subject);
+        router.push(`/visualise?${params.toString()}`);
+        return;
+      }
+      if (action.type === "mark_done") {
+        if (!token || !action.topic_id) {
+          return;
+        }
+        try {
+          await updateTopicProgress(token, action.topic_id, "completed");
+          setDoneActionKeys((prev) => new Set(prev).add(key));
+          setToast({ message: `Marked "${action.topic}" as complete`, variant: "success" });
+        } catch {
+          setToast({ message: "Could not update progress. Please try again.", variant: "error" });
+        }
+      }
+    },
+    [router, subject, token],
   );
 
   useEffect(() => {
@@ -659,7 +689,7 @@ export default function AITutorPage() {
           onChange={(event) => setSubject(event.target.value)}
           className="w-full rounded-xl border border-[#4c463d] bg-[#1a1a1a] px-3 py-2 text-sm text-[#e5e2e1] outline-none transition-all duration-200 ease-in-out focus:border-[#d5c5a8]"
         >
-          {SUBJECTS.map((item) => (
+          {subjectList.map((item) => (
             <option key={item} value={item}>
               {item}
             </option>
@@ -830,6 +860,38 @@ export default function AITutorPage() {
                       {message.role === "assistant" && message.syllabusUpdatedTopic ? (
                         <div className="mt-2 rounded-xl border border-[#4c463d] bg-[#1c1b1b] px-3 py-2 text-xs text-[#d5c5a8]">
                           Progress updated: marked <span className="font-semibold">{message.syllabusUpdatedTopic}</span> as in progress.
+                        </div>
+                      ) : null}
+                      {message.role === "assistant" && message.actions?.length ? (
+                        <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                          {message.actions.map((action, actionIndex) => {
+                            const actionKey = `${message.id}:${actionIndex}`;
+                            const isDone = doneActionKeys.has(actionKey);
+                            const Icon =
+                              action.type === "replan"
+                                ? RefreshCw
+                                : action.type === "mcq"
+                                  ? ListChecks
+                                  : action.type === "visual"
+                                    ? Sparkles
+                                    : CheckCircle2;
+                            return (
+                              <button
+                                key={actionKey}
+                                type="button"
+                                disabled={isDone}
+                                onClick={() => void handleTutorAction(action, actionKey)}
+                                className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-all active:translate-y-px ${
+                                  isDone
+                                    ? "cursor-default border-[#2f4a35] bg-[#16271b] text-[#69db8b]"
+                                    : "border-[#d5c5a8]/30 bg-[#d5c5a8]/8 text-[#e9dcc2] hover:border-[#d5c5a8]/60 hover:bg-[#d5c5a8]/14"
+                                }`}
+                              >
+                                {isDone ? <CheckCircle2 size={13} strokeWidth={2} /> : <Icon size={13} strokeWidth={2} />}
+                                {isDone ? "Done" : action.label}
+                              </button>
+                            );
+                          })}
                         </div>
                       ) : null}
                     </div>

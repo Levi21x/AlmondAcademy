@@ -49,7 +49,7 @@ const navItems: NavItem[] = [
   { name: "Crisis Mode",  href: "/crisis",       icon: "alert",      premium: true,  crisis: true,   section: "tools" },
 ];
 
-export function Sidebar({ mobileOpen, onClose, planType: _planType, isPremium = false, userName = "New Student", collegeName = "Your College", mode = "MBBS", onModeChange, onLogout }: SidebarProps) {
+export function Sidebar({ mobileOpen, onClose, isPremium = false, userName = "New Student", collegeName = "Your College", mode = "MBBS", onModeChange, onLogout }: SidebarProps) {
   const pathname = usePathname();
   const fallbackToken = useAuthStore((state) => state.accessToken);
   const [almonds, setAlmonds] = useState<AlmondStatus | null>(null);

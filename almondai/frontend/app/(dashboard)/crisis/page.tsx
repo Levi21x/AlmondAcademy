@@ -17,24 +17,8 @@ import {
   type TeachingContent,
 } from "@/lib/api/crisis.api";
 import { getSupabaseClient } from "@/lib/supabase/client";
+import { useSubjectList } from "@/lib/hooks/useSubjectList";
 import { useAuthStore } from "@/lib/store/authStore";
-
-const SUBJECTS = [
-  "Anatomy",
-  "Physiology",
-  "Biochemistry",
-  "Pathology",
-  "Pharmacology",
-  "Microbiology",
-  "Forensic Medicine",
-  "Community Medicine",
-  "ENT",
-  "Ophthalmology",
-  "Medicine",
-  "Surgery",
-  "Obstetrics and Gynecology",
-  "Pediatrics",
-];
 
 const PREP_OPTIONS: Array<{ key: PreparationLevel; title: string; description: string }> = [
   { key: "zero", title: "Zero", description: "I have not studied anything" },
@@ -66,6 +50,7 @@ function daysRemainingLabel(examDate: string) {
 
 export default function CrisisPage() {
   const fallbackToken = useAuthStore((state) => state.accessToken);
+  const { subjects: subjectList } = useSubjectList();
 
   const [status, setStatus] = useState<CrisisActivationStatus | null>(null);
   const [session, setSession] = useState<CrisisSession | null>(null);
@@ -370,14 +355,14 @@ export default function CrisisPage() {
                     <p className="text-sm text-[#cec5b9]">Subjects to cover</p>
                     <button
                       type="button"
-                      onClick={() => setSelectedSubjects(selectedSubjects.length === SUBJECTS.length ? [] : SUBJECTS)}
+                      onClick={() => setSelectedSubjects(selectedSubjects.length === subjectList.length ? [] : subjectList)}
                       className="text-xs text-[#ffcf9d]"
                     >
-                      {selectedSubjects.length === SUBJECTS.length ? "Clear all" : "Select all"}
+                      {selectedSubjects.length === subjectList.length ? "Clear all" : "Select all"}
                     </button>
                   </div>
                   <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
-                    {SUBJECTS.map((subject) => {
+                    {subjectList.map((subject) => {
                       const active = selectedSubjects.includes(subject);
                       return (
                         <button

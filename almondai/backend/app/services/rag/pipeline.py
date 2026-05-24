@@ -416,8 +416,6 @@ class AlmondRAGPipeline:
                 full_response += str(chunk)
                 yield chunk
         except ValueError as exc:
-            if effective_quick:
-                raise
             logger.warning(
                 "Primary LLM rate-limited at runtime (%s). Retrying with OpenRouter FAST.", exc
             )
@@ -598,8 +596,6 @@ class AlmondRAGPipeline:
                 system_prompt=full_system_prompt,
             )
         except ValueError as exc:
-            if effective_quick:
-                raise
             logger.warning(
                 "Primary LLM rate-limited at runtime (%s). Retrying sync with OpenRouter FAST.", exc
             )

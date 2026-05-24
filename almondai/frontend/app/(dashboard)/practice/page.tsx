@@ -11,13 +11,13 @@ import {
 } from "@/lib/api/mcq.api";
 import { getTopicByName, updateTopicProgress } from "@/lib/api/syllabus.api";
 import { getSupabaseClient } from "@/lib/supabase/client";
+import { useSubjectList } from "@/lib/hooks/useSubjectList";
 import { useAuthStore } from "@/lib/store/authStore";
 
 type OptionKey = "a" | "b" | "c" | "d";
 type AnswerRecord = { questionId: string; selected: OptionKey; result: MCQAttemptResult; timeTakenSeconds: number; };
 
 const TOTAL_QUESTIONS = 10;
-const SUBJECTS = ["Anatomy","Physiology","Biochemistry","Pathology","Pharmacology","Microbiology","Forensic Medicine","Community Medicine","ENT","Ophthalmology","Medicine","Surgery","Obstetrics and Gynecology","Pediatrics"];
 
 function difficultyStyle(d: Difficulty): { color: string; bg: string; label: string } {
   if (d === "easy")   return { color: "var(--aa-green)",  bg: "rgba(34,197,94,0.1)",    label: "Easy" };
@@ -43,6 +43,7 @@ export default function PracticePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const fallbackToken = useAuthStore((s) => s.accessToken);
+  const { subjects: subjectList, loaded: subjectsLoaded } = useSubjectList();
 
   const isTutorFlow    = searchParams.get("mode") === "tutor_flow";
   const initialSubject = (searchParams.get("subject") || "Anatomy").trim() || "Anatomy";
@@ -105,6 +106,13 @@ export default function PracticePage() {
     const id = window.setInterval(() => void refreshAlmonds(), 60_000);
     return () => window.clearInterval(id);
   }, [refreshAlmonds]);
+
+  useEffect(() => {
+    if (!subjectsLoaded || subjectList.length === 0) return;
+    if (!subjectList.includes(subject)) {
+      setSubject(subjectList[0]);
+    }
+  }, [subjectsLoaded, subjectList]);
 
   useEffect(() => {
     if (!activeSession || sessionFinished) return;
@@ -324,7 +332,7 @@ export default function PracticePage() {
               <div>
                 <div className="aa-label" style={{ color: "var(--aa-text-3)", marginBottom: 8, fontSize: "0.6rem" }}>Subject</div>
                 <select value={subject} onChange={(e) => setSubject(e.target.value)} className="aa-input select-aa-input">
-                  {SUBJECTS.map((s) => <option key={s} value={s}>{s}</option>)}
+                  {subjectList.map((s: string) => <option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
               <div>

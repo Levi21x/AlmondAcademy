@@ -308,6 +308,24 @@ That is it. No more. No headers. No lists.
 """
 
 
+ACTION_MARKER_INSTRUCTIONS = """
+--- ACTION SUGGESTIONS (the ONLY allowed bracket tag) ---
+
+RULE 10 forbids bracketed tags. The SINGLE exception is an action marker. When (and only
+when) it would genuinely help the student, you MAY end your reply with ONE action marker on
+its very last line. Use these EXACT formats and nothing else:
+
+- [ACTION:mcq:<Subject>]  - the student seems ready to test themselves
+- [ACTION:visual:<flowchart|mind_map|decision_tree>:<Topic>]  - a diagram would clarify
+- [ACTION:replan]  - the student says they are behind, missed days, or are out of time
+- [ACTION:mark_done:<Topic>]  - the student clearly states they have finished/understood a topic
+
+Rules: at most ONE marker, always on the final line, never explain it, never invent other
+formats or other bracket tags. If no action clearly fits, do not output any marker. The marker
+is silently removed before the student sees your reply, so never refer to it in your prose.
+"""
+
+
 def build_system_prompt(
     student_category: str,
     question: str,
@@ -332,6 +350,10 @@ def build_system_prompt(
         prompt += f"""
 CURRENT SUBJECT: {subject}
 """
+
+    # Agentic action suggestions (not in quick mode — keep quick answers minimal)
+    if not quick_mode:
+        prompt += ACTION_MARKER_INSTRUCTIONS
 
     # Memory context - always silent
     if memory_context and memory_context.strip():

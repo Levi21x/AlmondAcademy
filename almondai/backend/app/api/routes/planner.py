@@ -28,6 +28,14 @@ class GeneratePlanRequest(BaseModel):
     regenerate: bool = False
 
 
+class ReplanRequest(BaseModel):
+    available_hours_per_day: Optional[float] = Field(default=None, ge=1.0, le=16.0)
+
+
+# Replan is recommended once the student has this many past plan-days with zero study activity.
+REPLAN_MISSED_DAYS_THRESHOLD = 2
+
+
 def _success(data: Any) -> Dict[str, Any]:
     return {"success": True, "data": data}
 
@@ -198,6 +206,179 @@ def _resolve_today_from_plan(plan: Dict[str, Any], exam_day: date) -> Dict[str, 
     return days[0]
 
 
+def _plan_start_date(plan: Dict[str, Any]) -> date:
+    days = plan.get("days")
+    earliest = date.today()
+    if isinstance(days, list):
+        for day_entry in days:
+            try:
+                day_date = date.fromisoformat(str(day_entry.get("date")))
+            except (TypeError, ValueError):
+                continue
+            earliest = min(earliest, day_date)
+    return earliest
+
+
+def _get_activity_dates(client, user_id: str, since: date) -> set[str]:
+    """Distinct calendar dates (ISO) on which the student logged any study activity."""
+    rows = (
+        client.table("study_activity")
+        .select("created_at")
+        .eq("user_id", user_id)
+        .gte("created_at", since.isoformat())
+        .execute()
+        .data
+        or []
+    )
+    dates: set[str] = set()
+    for row in rows:
+        raw = row.get("created_at")
+        if not raw:
+            continue
+        try:
+            dates.add(date.fromisoformat(str(raw)[:10]).isoformat())
+        except ValueError:
+            continue
+    return dates
+
+
+def _compute_plan_status(plan: Dict[str, Any], activity_dates: set[str]) -> Dict[str, Any]:
+    """Deterministic drift detection: how many past plan-days had no study activity."""
+    days = plan.get("days")
+    today = date.today()
+
+    past_days: List[date] = []
+    if isinstance(days, list):
+        for day_entry in days:
+            try:
+                day_date = date.fromisoformat(str(day_entry.get("date")))
+            except (TypeError, ValueError):
+                continue
+            if day_date < today:
+                past_days.append(day_date)
+
+    total_past = len(past_days)
+    if total_past == 0:
+        return {
+            "has_plan": True,
+            "missed_days": 0,
+            "past_days": 0,
+            "on_track_percentage": 100,
+            "replan_recommended": False,
+            "reason": "Your plan is on schedule.",
+        }
+
+    active_past = sum(1 for day_date in past_days if day_date.isoformat() in activity_dates)
+    missed_days = total_past - active_past
+    on_track = int(round((active_past / total_past) * 100))
+    replan_recommended = missed_days >= REPLAN_MISSED_DAYS_THRESHOLD
+
+    if replan_recommended:
+        reason = (
+            f"You have {missed_days} day(s) with no study activity. "
+            "Replanning will redistribute the remaining syllabus across the days you have left."
+        )
+    else:
+        reason = "Your plan is on schedule."
+
+    return {
+        "has_plan": True,
+        "missed_days": missed_days,
+        "past_days": total_past,
+        "on_track_percentage": on_track,
+        "replan_recommended": replan_recommended,
+        "reason": reason,
+    }
+
+
+async def _generate_and_persist_plan(
+    client,
+    user_id: str,
+    exam: Dict[str, Any],
+    available_hours_per_day: float,
+) -> Dict[str, Any]:
+    """Generate a plan via the LLM and persist it as the new active plan version.
+
+    Deactivates any prior active plan for the exam, inserts the new plan, and
+    re-seeds daily_plan_progress. Raises ValueError (bad inputs) or HTTPException
+    (persistence failure) for the caller to map to a response.
+    """
+    exam_id = exam["id"]
+
+    profile_rows = (
+        client.table("student_profiles")
+        .select("student_category")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    student_category = (profile_rows[0].get("student_category") if profile_rows else None) or "sprinter"
+
+    selected_subjects = [subject for subject in (exam.get("subjects") or []) if isinstance(subject, str) and subject.strip()]
+    subject_progress = _get_subject_progress(client, user_id, selected_subjects if selected_subjects else None)
+    exam_day = _parse_date(exam["exam_date"])
+
+    plan = await generate_study_plan(
+        user_id=user_id,
+        exam_id=exam_id,
+        exam_name=exam["exam_name"],
+        exam_date=exam_day,
+        student_category=student_category,
+        subjects=selected_subjects,
+        subject_progress=subject_progress,
+        available_hours_per_day=available_hours_per_day,
+    )
+
+    client.table("study_plans").update(
+        {"is_active": False, "updated_at": datetime.now(timezone.utc).isoformat()}
+    ).eq("user_id", user_id).eq("exam_id", exam_id).eq("is_active", True).execute()
+
+    inserted = (
+        client.table("study_plans")
+        .insert(
+            {
+                "user_id": user_id,
+                "exam_id": exam_id,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "exam_date": exam_day.isoformat(),
+                "days_remaining": int(plan.get("days_remaining", 0) or 0),
+                "plan_data": plan,
+                "is_active": True,
+            }
+        )
+        .execute()
+    )
+    if not inserted.data:
+        raise HTTPException(status_code=500, detail={"error": True, "message": "Failed to save study plan", "code": "PLAN_SAVE_FAILED"})
+
+    plan_row = inserted.data[0]
+    days = plan.get("days") if isinstance(plan.get("days"), list) else []
+    progress_rows = []
+    for day_entry in days:
+        try:
+            plan_day = date.fromisoformat(str(day_entry.get("date")))
+        except Exception:
+            continue
+        topics = day_entry.get("topics") if isinstance(day_entry.get("topics"), list) else []
+        progress_rows.append(
+            {
+                "user_id": user_id,
+                "plan_id": plan_row["id"],
+                "plan_date": plan_day.isoformat(),
+                "topics_planned": len(topics),
+                "topics_completed": 0,
+                "is_completed": False,
+            }
+        )
+
+    if progress_rows:
+        client.table("daily_plan_progress").upsert(progress_rows, on_conflict="user_id,plan_id,plan_date").execute()
+
+    return plan_row
+
+
 @router.post("/exams")
 def create_exam(payload: CreateExamRequest, user=Depends(require_auth)) -> Dict[str, Any]:
     client = get_supabase_admin_client()
@@ -308,79 +489,14 @@ async def generate_exam_plan(exam_id: str, payload: GeneratePlanRequest, user=De
                 },
             )
 
-    profile_rows = (
-        client.table("student_profiles")
-        .select("student_category")
-        .eq("user_id", user_id)
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    student_category = (profile_rows[0].get("student_category") if profile_rows else None) or "sprinter"
-
-    selected_subjects = [subject for subject in (exam.get("subjects") or []) if isinstance(subject, str) and subject.strip()]
-    subject_progress = _get_subject_progress(client, user_id, selected_subjects if selected_subjects else None)
-    exam_day = _parse_date(exam["exam_date"])
-
     try:
-        plan = await generate_study_plan(
-            user_id=user_id,
-            exam_id=exam_id,
-            exam_name=exam["exam_name"],
-            exam_date=exam_day,
-            student_category=student_category,
-            subjects=selected_subjects,
-            subject_progress=subject_progress,
-            available_hours_per_day=payload.available_hours_per_day,
-        )
+        plan_row = await _generate_and_persist_plan(client, user_id, exam, payload.available_hours_per_day)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={"error": True, "message": str(exc), "code": "PLAN_GENERATION_INVALID"}) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail={"error": True, "message": "Failed to generate study plan", "code": "PLAN_GENERATION_FAILED", "details": {"reason": str(exc)}}) from exc
-
-    client.table("study_plans").update({"is_active": False, "updated_at": datetime.now(timezone.utc).isoformat()}).eq("user_id", user_id).eq("exam_id", exam_id).eq("is_active", True).execute()
-
-    inserted = (
-        client.table("study_plans")
-        .insert(
-            {
-                "user_id": user_id,
-                "exam_id": exam_id,
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-                "exam_date": exam_day.isoformat(),
-                "days_remaining": int(plan.get("days_remaining", 0) or 0),
-                "plan_data": plan,
-                "is_active": True,
-            }
-        )
-        .execute()
-    )
-    if not inserted.data:
-        raise HTTPException(status_code=500, detail={"error": True, "message": "Failed to save study plan", "code": "PLAN_SAVE_FAILED"})
-
-    plan_row = inserted.data[0]
-    days = plan.get("days") if isinstance(plan.get("days"), list) else []
-    progress_rows = []
-    for day_entry in days:
-        try:
-            plan_day = date.fromisoformat(str(day_entry.get("date")))
-        except Exception:
-            continue
-        topics = day_entry.get("topics") if isinstance(day_entry.get("topics"), list) else []
-        progress_rows.append(
-            {
-                "user_id": user_id,
-                "plan_id": plan_row["id"],
-                "plan_date": plan_day.isoformat(),
-                "topics_planned": len(topics),
-                "topics_completed": 0,
-                "is_completed": False,
-            }
-        )
-
-    if progress_rows:
-        client.table("daily_plan_progress").upsert(progress_rows, on_conflict="user_id,plan_id,plan_date").execute()
 
     return _success(_normalize_plan_row(plan_row, exam))
 
@@ -450,3 +566,73 @@ def get_today_plan(user=Depends(require_auth)) -> Dict[str, Any]:
             "today": today_day,
         }
     )
+
+
+@router.get("/exams/{exam_id}/status")
+def get_plan_status(exam_id: str, user=Depends(require_auth)) -> Dict[str, Any]:
+    """Drift signal for the autonomous manager: how far the student has fallen behind."""
+    client = get_supabase_admin_client()
+    user_id = user["user_id"]
+
+    exam = _get_active_exam(client, user_id, exam_id)
+    if not exam:
+        raise HTTPException(status_code=404, detail={"error": True, "message": "Exam not found", "code": "EXAM_NOT_FOUND"})
+
+    plan_row = _get_latest_active_plan_row(client, user_id, exam_id)
+    if not plan_row:
+        return _success(
+            {
+                "has_plan": False,
+                "missed_days": 0,
+                "past_days": 0,
+                "on_track_percentage": 100,
+                "replan_recommended": False,
+                "reason": "No active study plan.",
+            }
+        )
+
+    normalized = _normalize_plan_row(plan_row, exam)
+    activity_dates = _get_activity_dates(client, user_id, _plan_start_date(normalized))
+    status = _compute_plan_status(normalized, activity_dates)
+    status["exam_name"] = exam["exam_name"]
+    status["days_remaining"] = max(_days_remaining(_parse_date(exam["exam_date"])), 0)
+    return _success(status)
+
+
+@router.post("/exams/{exam_id}/replan")
+async def replan_exam_plan(exam_id: str, payload: ReplanRequest, user=Depends(require_auth)) -> Dict[str, Any]:
+    """Regenerate the active plan, compressing the remaining syllabus into the days left.
+
+    Replanning replaces the existing active plan (no net new plan), so it is allowed
+    for free users without hitting the one-active-plan limit.
+    """
+    client = get_supabase_admin_client()
+    user_id = user["user_id"]
+
+    exam = _get_active_exam(client, user_id, exam_id)
+    if not exam:
+        raise HTTPException(status_code=404, detail={"error": True, "message": "Exam not found", "code": "EXAM_NOT_FOUND"})
+
+    existing = _get_latest_active_plan_row(client, user_id, exam_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail={"error": True, "message": "No active plan to replan. Generate a plan first.", "code": "PLAN_NOT_FOUND"})
+
+    hours = payload.available_hours_per_day
+    if hours is None:
+        existing_data = existing.get("plan_data") or {}
+        try:
+            hours = float(existing_data.get("daily_hours", 6.0) or 6.0)
+        except (TypeError, ValueError):
+            hours = 6.0
+        hours = min(max(hours, 1.0), 16.0)
+
+    try:
+        plan_row = await _generate_and_persist_plan(client, user_id, exam, hours)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": True, "message": str(exc), "code": "PLAN_GENERATION_INVALID"}) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail={"error": True, "message": "Failed to replan study plan", "code": "PLAN_REPLAN_FAILED", "details": {"reason": str(exc)}}) from exc
+
+    return _success(_normalize_plan_row(plan_row, exam))

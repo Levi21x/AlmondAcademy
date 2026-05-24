@@ -7,7 +7,7 @@ import re
 from typing import Any, Dict, List
 
 from app.core.database import get_supabase_admin_client
-from app.services.llm.openrouter_client import OpenRouterLLMClient, OPENROUTER_MODELS
+from app.services.llm.openrouter_client import generate_with_fallback_sync
 from app.services.rag.vector_store import ChromaVectorStore
 
 
@@ -258,10 +258,10 @@ Generate a JSON summary with this structure:
 }}
 """
 
-        llm = OpenRouterLLMClient(OPENROUTER_MODELS["default"])
-        raw = await llm.generate_sync(
+        raw = await generate_with_fallback_sync(
             prompt=prompt,
             system_prompt="You are AlmondAI memory analyst. Return only valid JSON.",
+            tier="default",
         )
         parsed = self._extract_json_object(raw)
 

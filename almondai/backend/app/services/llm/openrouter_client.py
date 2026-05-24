@@ -121,8 +121,55 @@ class OpenRouterLLMClient:
                 temperature=0.7,
             )
             return (response.choices[0].message.content or "").strip()
-        except Exception:
+        except Exception as exc:
+            if self._is_quota_error(exc):
+                raise ValueError(
+                    f"OpenRouter quota/rate-limit on {self.model}. Falling back."
+                ) from exc
             logger.exception(
                 "OpenRouter generate_with_messages failed (model=%s)", self.model
             )
             return "I could not process your request right now. Please try again."
+
+
+# Fallback chain: premium → default → fast
+_FALLBACK_CHAINS: dict[str, list[str]] = {
+    "premium": ["premium", "default", "fast"],
+    "default": ["default", "fast"],
+    "fast": ["fast"],
+}
+
+
+async def generate_with_fallback_sync(
+    prompt: str,
+    system_prompt: str,
+    max_tokens: int = 1500,
+    tier: str = "default",
+) -> str:
+    """
+    Tries the requested tier, automatically falling back on quota/rate-limit:
+      premium → default → fast
+      default → fast
+      fast    → (raises if exhausted)
+
+    Raises ValueError only when every tier in the chain is exhausted.
+    """
+    chain = _FALLBACK_CHAINS.get(tier, ["default", "fast"])
+    last_exc: Exception | None = None
+    for t in chain:
+        try:
+            client = OpenRouterLLMClient(OPENROUTER_MODELS[t])
+            result = await client.generate_sync(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens,
+            )
+            if t != tier:
+                logger.warning("OpenRouter runtime fallback: %s → %s", tier, t)
+            return result
+        except ValueError as exc:
+            logger.warning("OpenRouter %s quota/rate-limit: %s", t, exc)
+            last_exc = exc
+    raise ValueError(
+        f"All OpenRouter tiers exhausted starting from '{tier}'. Last error: {last_exc}"
+    )

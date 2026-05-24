@@ -42,8 +42,10 @@ const questions: Question[] = [
     icon: "🎓",
     hint: "This helps us calibrate your study level",
     options: [
-      { value: "1st or 2nd Year MBBS", label: "1st or 2nd Year MBBS" },
-      { value: "3rd Year or Final Year MBBS", label: "3rd Year or Final Year MBBS" },
+      { value: "1st Year MBBS", label: "1st Year MBBS" },
+      { value: "2nd Year MBBS", label: "2nd Year MBBS" },
+      { value: "3rd Year MBBS", label: "3rd Year MBBS" },
+      { value: "Final Year MBBS", label: "Final Year MBBS" },
       { value: "Internship / Full-time NEET-PG prep", label: "Internship / Full-time NEET-PG prep" },
     ],
   },
@@ -135,8 +137,16 @@ function resolveCategory(answers: Answers): keyof typeof categoryMeta {
 
 function resolveMode(value: string): "mbbs" | "neet_pg" | "both" {
   if (value === "Internship / Full-time NEET-PG prep") return "neet_pg";
-  if (value === "3rd Year or Final Year MBBS") return "both";
+  if (value === "3rd Year MBBS" || value === "Final Year MBBS") return "both";
   return "mbbs";
+}
+
+function resolveYear(value: string): number | null {
+  if (value === "1st Year MBBS") return 1;
+  if (value === "2nd Year MBBS") return 2;
+  if (value === "3rd Year MBBS") return 3;
+  if (value === "Final Year MBBS") return 4;
+  return null;
 }
 
 function resolveStyle(values: string[]): "concise" | "detailed" | "visual" | "conversational" {
@@ -204,7 +214,8 @@ export default function OnboardingPage() {
     const category = resolveCategory(answers);
     const mode = resolveMode(answers.q1);
     const style = resolveStyle(answers.q5);
-    return { category, mode, style };
+    const year = resolveYear(answers.q1);
+    return { category, mode, style, year };
   }, [answers, complete]);
 
   const toggleOption = (key: QuestionKey, value: string, multiSelect: boolean) => {
@@ -270,7 +281,7 @@ export default function OnboardingPage() {
         full_name: "AlmondAI Student",
         college_name: joinedQ2,
         university_name: `${joinedQ3} | ${joinedQ5}`,
-        current_year: null,
+        current_year: resolved.year,
         mode: resolved.mode,
         student_category: resolved.category,
         teaching_style: resolved.style,
@@ -282,6 +293,7 @@ export default function OnboardingPage() {
         await updateProfile(activeToken, {
           college_name: joinedQ2,
           university_name: `${joinedQ3} | ${joinedQ5}`,
+          current_year: resolved.year,
           mode: resolved.mode,
           student_category: resolved.category,
           teaching_style: resolved.style,
@@ -378,7 +390,7 @@ export default function OnboardingPage() {
             )}
 
             {/* Options */}
-            <div style={{ display: "grid", gap: 10, gridTemplateColumns: currentQuestion.options.length <= 3 ? "1fr" : "repeat(auto-fill,minmax(300px,1fr))" }}>
+            <div style={{ display: "grid", gap: 10, gridTemplateColumns: (!currentQuestion.multiSelect || currentQuestion.options.length <= 3) ? "1fr" : "repeat(auto-fill,minmax(300px,1fr))" }}>
               {currentQuestion.options.map((option) => {
                 const selected = currentQuestion.multiSelect
                   ? (answers[currentQuestion.key] as string[]).includes(option.value)
