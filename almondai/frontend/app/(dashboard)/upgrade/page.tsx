@@ -134,7 +134,7 @@ export default function UpgradePage() {
       <section className="rounded-2xl border border-[#353534] bg-[linear-gradient(120deg,#242018_0%,#131313_55%,#1e1a14_100%)] p-6 md:p-8">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="text-xs uppercase tracking-[0.2em] text-[#d5c5a8]">Segment 12</p>
+            <p className="text-xs uppercase tracking-[0.2em] text-[#d5c5a8]">Membership</p>
             <h1 className="aa-h1 mt-2 flex items-center gap-2 text-[var(--aa-text-1)]">
               <Crown className="h-8 w-8 text-[#d5c5a8]" /> Upgrade to AlmondAI Premium
             </h1>
@@ -176,7 +176,7 @@ export default function UpgradePage() {
             return (
               <article
                 key={plan.code}
-                className={`rounded-xl border p-5 ${plan.popular ? "border-[#d5c5a8] bg-[#231f19]" : "border-[#353534] bg-[#151515]"}`}
+                className={`aa-lift rounded-xl border p-5 ${plan.popular ? "border-[#d5c5a8] bg-[#231f19]" : "border-[#353534] bg-[#151515]"}`}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -200,7 +200,7 @@ export default function UpgradePage() {
                   type="button"
                   onClick={() => void openCheckout(plan.code)}
                   disabled={loadingPlan === plan.code || isPremium}
-                  className="mt-5 w-full rounded-xl bg-[#fff2de] px-4 py-2 text-sm font-semibold text-[#392f1b] disabled:opacity-60"
+                  className="aa-press mt-5 w-full rounded-xl bg-[#fff2de] px-4 py-2 text-sm font-semibold text-[#392f1b] transition-all duration-200 hover:bg-[#fff8ef] disabled:opacity-60"
                 >
                   {isPremium ? "Already Premium" : loadingPlan === plan.code ? "Opening checkout..." : `Pay ${priceLabel(plan.amount_paise)}`}
                 </button>
@@ -216,7 +216,7 @@ export default function UpgradePage() {
 
         <div className="mt-4 grid gap-3 md:grid-cols-2">
           {crisisPacks.map((pack) => (
-            <article key={pack.code} className="rounded-xl border border-[#353534] bg-[#151515] p-4">
+            <article key={pack.code} className="aa-lift rounded-xl border border-[#353534] bg-[#151515] p-4">
               <p className="text-lg font-semibold text-[#fff2de]">{pack.name}</p>
               <p className="mt-1 text-sm text-[#cec5b9]">{pack.description}</p>
               <p className="mt-4 text-2xl font-bold text-[#fff2de]">{priceLabel(pack.amount_paise)}</p>
@@ -224,7 +224,7 @@ export default function UpgradePage() {
                 type="button"
                 onClick={() => void openCheckout(pack.code)}
                 disabled={loadingPlan === pack.code}
-                className="mt-4 w-full rounded-xl border border-[#4c463d] px-3 py-2 text-sm text-[#e5e2e1]"
+                className="aa-press mt-4 w-full rounded-xl border border-[#4c463d] px-3 py-2 text-sm text-[#e5e2e1] transition-all duration-200 hover:border-[#d5c5a8]/40 hover:text-[#fff2de]"
               >
                 {loadingPlan === pack.code ? "Opening checkout..." : "Buy Pack"}
               </button>

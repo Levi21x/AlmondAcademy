@@ -170,7 +170,7 @@ export default function SignupPage() {
             </div>
           )}
 
-          <form style={{ display: "flex", flexDirection: "column", gap: 14 }} onSubmit={onSubmit} noValidate>
+          <form className="aa-stagger" style={{ display: "flex", flexDirection: "column", gap: 14 }} onSubmit={onSubmit} noValidate>
             <Input
               label="Full name"
               placeholder="Dr. Aditi Sharma"

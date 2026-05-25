@@ -390,7 +390,7 @@ export default function OnboardingPage() {
             )}
 
             {/* Options */}
-            <div style={{ display: "grid", gap: 10, gridTemplateColumns: (!currentQuestion.multiSelect || currentQuestion.options.length <= 3) ? "1fr" : "repeat(auto-fill,minmax(300px,1fr))" }}>
+            <div className="aa-stagger" style={{ display: "grid", gap: 10, gridTemplateColumns: (!currentQuestion.multiSelect || currentQuestion.options.length <= 3) ? "1fr" : "repeat(auto-fill,minmax(300px,1fr))" }}>
               {currentQuestion.options.map((option) => {
                 const selected = currentQuestion.multiSelect
                   ? (answers[currentQuestion.key] as string[]).includes(option.value)
@@ -400,6 +400,7 @@ export default function OnboardingPage() {
                   <button
                     key={option.value}
                     type="button"
+                    className="aa-press"
                     onClick={() => toggleOption(currentQuestion.key, option.value, currentQuestion.multiSelect)}
                     onMouseEnter={() => setOptionHover(option.value)}
                     onMouseLeave={() => setOptionHover(null)}

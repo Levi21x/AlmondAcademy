@@ -5,7 +5,7 @@ export default function ResetPasswordPage() {
   return (
     <main className="min-h-screen bg-[#131313] px-4 py-6 md:px-8 md:py-10">
       <div className="mx-auto max-w-md">
-        <Card className="space-y-6">
+        <Card className="space-y-6 aa-anim-fade-up">
           <div className="text-center">
             <div className="mb-3 inline-flex items-center gap-2 text-2xl font-bold">
               <span className="inline-flex h-8 w-8 items-center justify-center rounded-md tactile-gradient text-xs font-bold text-[#131313]">A</span>

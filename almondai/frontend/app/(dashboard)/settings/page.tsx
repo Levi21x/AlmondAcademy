@@ -84,6 +84,7 @@ function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: (v: b
       type="button"
       role="switch"
       aria-checked={checked}
+      className="aa-press"
       onClick={() => onChange(!checked)}
       style={{
         width: 44,
@@ -299,7 +300,7 @@ export default function SettingsPage() {
         </p>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div className="aa-stagger" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
 
         {/* Appearance */}
         <SectionCard>
@@ -423,11 +424,8 @@ export default function SettingsPage() {
             </div>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {activityLoading && (
-              <div style={{ padding: "20px 0", textAlign: "center", fontFamily: "var(--aa-fb)", fontSize: "0.875rem", color: "var(--aa-text-3)" }}>
-                Loading activity...
-              </div>
-            )}
+            {activityLoading &&
+              [1, 2, 3, 4].map((k) => <div key={k} className="aa-skeleton" style={{ height: 52, borderRadius: 10 }} />)}
             {!activityLoading && filteredActivity.length === 0 && (
               <div style={{ padding: "24px 16px", borderRadius: 12, border: "1px solid rgba(76,70,61,0.3)", background: "rgba(14,14,14,0.4)", textAlign: "center", fontFamily: "var(--aa-fb)", fontSize: "0.875rem", color: "var(--aa-text-3)" }}>
                 No activity in this time range

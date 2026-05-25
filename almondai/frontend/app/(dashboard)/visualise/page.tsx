@@ -147,7 +147,7 @@ export default function VisualisePage() {
       <section className="rounded-2xl border border-[#353534] bg-[radial-gradient(circle_at_top_right,#3d2f1f_0%,#1a1a1a_50%,#111111_100%)] p-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="text-xs uppercase tracking-[0.2em] text-[#d9c6a0]">Segment 11</p>
+            <p className="text-xs uppercase tracking-[0.2em] text-[#d9c6a0]">Visual Learning</p>
             <h1 className="aa-h1 mt-2 flex items-center gap-2 text-[var(--aa-text-1)]">
               <ImageIcon className="h-8 w-8 text-[#d5c5a8]" /> Visual Explanation Engine
             </h1>
@@ -190,7 +190,7 @@ export default function VisualisePage() {
               void handleGenerate();
             }}
             disabled={loading || !topic.trim() || freeLimitReached}
-            className="rounded-lg bg-[#d5c5a8] px-4 py-2 text-sm font-semibold text-[#2f2719] disabled:cursor-not-allowed disabled:opacity-50"
+            className="aa-press rounded-lg bg-[#d5c5a8] px-4 py-2 text-sm font-semibold text-[#2f2719] transition-all duration-200 hover:bg-[#e6d5b8] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {loading ? "Generating..." : freeLimitReached ? "Free limit reached" : "Generate"}
           </button>
@@ -205,10 +205,10 @@ export default function VisualisePage() {
               key={item.value}
               type="button"
               onClick={() => setVisualType(item.value)}
-              className={`rounded-full border px-3 py-1 text-xs ${
+              className={`aa-press rounded-full border px-3 py-1 text-xs transition-all duration-200 ${
                 visualType === item.value
                   ? "border-[#d5c5a8]/40 bg-[#2a2520] text-[#fff2de]"
-                  : "border-[#353534] bg-[#131313] text-[#b7ada0]"
+                  : "border-[#353534] bg-[#131313] text-[#b7ada0] hover:border-[#d5c5a8]/30 hover:text-[#d5c5a8]"
               }`}
             >
               {item.label} · {item.hint}
@@ -232,7 +232,7 @@ export default function VisualisePage() {
                 </span>
               </div>
 
-              <VisualRenderer type={activeVisual.visual_type} data={activeVisual.visual_data} />
+              <VisualRenderer key={activeVisual.id || activeVisual.topic} type={activeVisual.visual_type} data={activeVisual.visual_data} />
 
               <p className="mt-4 rounded-lg border border-[#353534] bg-[#151515] p-3 text-sm text-[#dcd1c3]">
                 {activeVisual.explanation || "No explanation available for this visual yet."}
@@ -255,7 +255,10 @@ export default function VisualisePage() {
           </div>
 
           <div className="max-h-[520px] space-y-2 overflow-y-auto pr-1">
-            {library.length === 0 ? <p className="text-sm text-[#b7ada0]">No saved visuals yet.</p> : null}
+            {libraryLoading && library.length === 0
+              ? [1, 2, 3].map((k) => <div key={k} className="aa-skeleton h-[58px] rounded-lg" />)
+              : null}
+            {!libraryLoading && library.length === 0 ? <p className="text-sm text-[#b7ada0]">No saved visuals yet.</p> : null}
 
             {library.map((item) => (
               <div key={item.id || `${item.topic}-${item.created_at}`} className="rounded-lg border border-[#353534] bg-[#151515] p-3">

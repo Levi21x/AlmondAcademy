@@ -14,7 +14,7 @@ interface VisualRendererProps {
   data: Record<string, unknown>;
 }
 
-export function VisualRenderer({ type, data }: VisualRendererProps) {
+function renderVisual({ type, data }: VisualRendererProps) {
   if (type === "flowchart") {
     return <FlowchartRenderer data={data} />;
   }
@@ -35,4 +35,8 @@ export function VisualRenderer({ type, data }: VisualRendererProps) {
   }
 
   return <FallbackRenderer data={data} />;
+}
+
+export function VisualRenderer({ type, data }: VisualRendererProps) {
+  return <div className="aa-anim-fade-up">{renderVisual({ type, data })}</div>;
 }

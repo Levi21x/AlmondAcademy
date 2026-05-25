@@ -205,7 +205,7 @@ export default function VoiceAgentPage() {
 
           <button
             onClick={() => setAutoSpeak((prev) => !prev)}
-            className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs transition-all ${
+            className={`aa-press flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs transition-all ${
               autoSpeak ? "border-[#d5c5a8]/40 text-[#d5c5a8]" : "border-[#353534] text-[#cec5b9]"
             }`}
           >
@@ -227,7 +227,7 @@ export default function VoiceAgentPage() {
         ) : null}
 
         {messages.map((message, index) => (
-          <div key={`${message.timestamp}-${index}`} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
+          <div key={`${message.timestamp}-${index}`} className={`aa-anim-fade-up flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
             {message.role === "assistant" ? (
               <div className="mr-3 mt-1 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded bg-[#d5c5a8]/10">
                 <Brain size={14} className="text-[#d5c5a8]" strokeWidth={1.8} />

@@ -700,7 +700,7 @@ export default function AITutorPage() {
       <div className="flex-1 min-h-0 space-y-2 overflow-y-auto px-3 pb-3">
         {sessionsLoading
           ? [1, 2, 3].map((key) => (
-              <div key={key} className="h-16 animate-pulse rounded-xl bg-[linear-gradient(90deg,#1f1f1f_0%,#2a2a2a_50%,#1f1f1f_100%)]" />
+              <div key={key} className="aa-skeleton h-16 rounded-xl" />
             ))
           : null}
 
@@ -811,13 +811,14 @@ export default function AITutorPage() {
                 <p style={{ fontFamily: "var(--aa-fb)", fontSize: "0.82rem", color: "var(--aa-amber)", background: "rgba(213,197,168,0.08)", border: "1px solid rgba(213,197,168,0.2)", borderRadius: 100, padding: "5px 14px", display: "inline-block", marginBottom: 32, fontWeight: 500 }}>
                   {studentCategoryLabel}
                 </p>
-                <div className="mt-0 grid w-full gap-3 md:grid-cols-3">
+                <div className="aa-stagger mt-0 grid w-full gap-3 md:grid-cols-3">
                   {starters.map((starter, i) => {
                     const icons = ["🧠", "🔬", "📋"];
                     return (
                       <button
                         key={starter}
                         type="button"
+                        className="aa-press"
                         onClick={() => { void handleSendMessage(starter); }}
                         style={{ borderRadius: 14, border: "1px solid rgba(76,70,61,0.4)", background: "rgba(31,31,31,0.6)", padding: "16px 18px", textAlign: "left", cursor: "pointer", transition: "all 0.18s ease", display: "flex", flexDirection: "column", gap: 10 }}
                         onMouseEnter={(e) => { e.currentTarget.style.borderColor = "rgba(213,197,168,0.3)"; e.currentTarget.style.background = "rgba(42,37,32,0.5)"; }}

@@ -7,10 +7,7 @@ interface SkeletonLoaderProps {
 export function SkeletonLoader({ className }: SkeletonLoaderProps) {
   return (
     <div
-      className={cn(
-        "animate-pulse rounded-xl bg-[linear-gradient(90deg,#201f1f_0%,#2a2a2a_50%,#201f1f_100%)]",
-        className,
-      )}
+      className={cn("aa-skeleton rounded-xl", className)}
       aria-hidden="true"
     />
   );

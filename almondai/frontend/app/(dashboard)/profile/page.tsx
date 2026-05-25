@@ -148,7 +148,7 @@ export default function ProfilePage() {
   const sectionTitleStyle: React.CSSProperties = { fontFamily: "var(--aa-fd)", fontSize: "1.15rem", fontWeight: 700, color: "var(--aa-text-1)", letterSpacing: "-0.02em", marginBottom: 4 };
 
   return (
-    <div style={{ animation: "aaFadeUp 0.35s ease-out both", display: "flex", flexDirection: "column", gap: 16 }}>
+    <div className="aa-stagger" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
       {/* Profile header */}
       <div style={{ ...cardStyle, borderTop: "2px solid rgba(213,197,168,0.3)" }}>
@@ -431,6 +431,7 @@ export default function ProfilePage() {
                   <button
                     key={opt.value}
                     type="button"
+                    className="aa-press"
                     onClick={() => void handleTeachingStyleChange(opt.value)}
                     style={{
                       padding: "12px 14px",

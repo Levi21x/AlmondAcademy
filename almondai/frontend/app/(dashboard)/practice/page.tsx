@@ -316,7 +316,7 @@ export default function PracticePage() {
 
         {/* ── Setup screen ── */}
         {!activeSession && !sessionFinished && !isTutorFlow && (
-          <div style={{ background: "var(--aa-s2)", border: "1px solid var(--aa-border)", borderRadius: "var(--aa-r-xl)", padding: "36px 32px" }}>
+          <div className="aa-anim-fade-up" style={{ background: "var(--aa-s2)", border: "1px solid var(--aa-border)", borderRadius: "var(--aa-r-xl)", padding: "36px 32px" }}>
             {/* Header */}
             <div style={{ marginBottom: 28 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
@@ -429,7 +429,7 @@ export default function PracticePage() {
                   }
 
                   return (
-                    <button key={key} type="button"
+                    <button key={key} type="button" className="aa-press"
                       onClick={() => { if (!submittedResult) setSelectedOption(key); }}
                       disabled={!!submittedResult}
                       style={{ width: "100%", borderRadius: "var(--aa-r-lg)", border: `1.5px solid ${borderColor}`, background: bgColor, padding: "14px 18px", textAlign: "left", cursor: submittedResult ? "default" : "pointer", transition: "all 0.18s ease", display: "flex", alignItems: "flex-start", gap: 14, fontFamily: "var(--aa-fb)" }}
@@ -450,10 +450,10 @@ export default function PracticePage() {
               <button type="button"
                 onClick={() => { if (!submittedResult) void submitCurrentAnswer(); else void moveNext(); }}
                 disabled={!submittedResult && !selectedOption}
-                style={{ marginTop: 22, width: "100%", padding: "15px 0", borderRadius: 100, fontFamily: "var(--aa-fb)", fontSize: "0.95rem", fontWeight: 700, cursor: (!submittedResult && !selectedOption) ? "not-allowed" : "pointer", transition: "all 0.2s", border: "none",
+                style={{ marginTop: 22, width: "100%", padding: "15px 0", borderRadius: 100, fontFamily: "var(--aa-fb)", fontSize: "0.95rem", fontWeight: 700, cursor: (!submittedResult && !selectedOption) ? "not-allowed" : "pointer", transition: "all 0.2s",
                   background: (!submittedResult && !selectedOption) ? "transparent" : "var(--aa-amber)",
                   color:      (!submittedResult && !selectedOption) ? "var(--aa-text-3)" : "#131313",
-                  border2:    (!submittedResult && !selectedOption) ? "1px solid var(--aa-border2)" : "none",
+                  border:     (!submittedResult && !selectedOption) ? "1px solid var(--aa-border2)" : "none",
                   opacity:    (!submittedResult && !selectedOption) ? 1 : 1,
                   boxShadow:  (!submittedResult && !selectedOption) ? "none" : "0 4px 20px rgba(213,197,168,0.2)",
                 } as React.CSSProperties}

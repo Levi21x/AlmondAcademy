@@ -140,7 +140,7 @@ export default function ProgressPage() {
       </div>
 
       {/* Stat cards */}
-      <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))", marginBottom: 20 }}>
+      <div className="aa-stagger" style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))", marginBottom: 20 }}>
         {statCards.map((card) => (
           <div
             key={card.label}
@@ -324,7 +324,8 @@ export default function ProgressPage() {
               <button
                 key={key}
                 type="button"
-                onClick={() => router.push(`/syllabus?subject=${encodeURIComponent(subject.subject_name)}`)}
+                className="aa-press"
+                onClick={() => router.push(`/planner?tab=map`)}
                 onMouseEnter={() => setSubjectHover(key)}
                 onMouseLeave={() => setSubjectHover(null)}
                 style={{

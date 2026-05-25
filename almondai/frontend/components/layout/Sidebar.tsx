@@ -30,14 +30,12 @@ interface NavItem {
   href: string;
   icon: AlmondIconName;
   premium?: boolean;
-  crisis?: boolean;
   section: "core" | "tools";
 }
 
 const navItems: NavItem[] = [
   { name: "Dashboard",    href: "/dashboard",    icon: "dashboard",  section: "core" },
   { name: "AI Tutor",     href: "/ai-tutor",     icon: "brain",      section: "core" },
-  { name: "Syllabus Map", href: "/syllabus",     icon: "map",        section: "core" },
   { name: "Practice MCQs",href: "/practice",     icon: "clipboard",  section: "core" },
   { name: "Progress",     href: "/progress",     icon: "trending",   section: "core" },
   { name: "Planner",      href: "/planner",      icon: "calendar",   premium: true,  section: "core" },
@@ -46,7 +44,6 @@ const navItems: NavItem[] = [
   { name: "Visualise",    href: "/visualise",    icon: "image",      premium: true,  section: "core" },
   { name: "Profile",      href: "/profile",      icon: "user",                       section: "tools" },
   { name: "Settings",     href: "/settings",     icon: "settings",                   section: "tools" },
-  { name: "Crisis Mode",  href: "/crisis",       icon: "alert",      premium: true,  crisis: true,   section: "tools" },
 ];
 
 export function Sidebar({ mobileOpen, onClose, isPremium = false, userName = "New Student", collegeName = "Your College", mode = "MBBS", onModeChange, onLogout }: SidebarProps) {
@@ -126,32 +123,26 @@ export function Sidebar({ mobileOpen, onClose, isPremium = false, userName = "Ne
           textDecoration: "none",
           transition: "all 0.16s ease",
           position: "relative",
-          color: active
-            ? (item.crisis ? "#e4b4a0" : "var(--aa-amber)")
-            : (item.crisis ? "#c99385" : "var(--aa-text-3)"),
-          background: active
-            ? (item.crisis ? "rgba(228,180,160,0.08)" : "rgba(213,197,168,0.08)")
-            : "transparent",
-          boxShadow: active
-            ? `inset 3px 0 0 ${item.crisis ? "var(--aa-coral)" : "var(--aa-amber)"}`
-            : "none",
+          color: active ? "var(--aa-amber)" : "var(--aa-text-3)",
+          background: active ? "rgba(213,197,168,0.08)" : "transparent",
+          boxShadow: active ? "inset 3px 0 0 var(--aa-amber)" : "none",
         }}
         onMouseEnter={(e) => {
           if (!active) {
-            e.currentTarget.style.background = item.crisis ? "rgba(228,180,160,0.05)" : "rgba(213,197,168,0.05)";
-            e.currentTarget.style.color = item.crisis ? "#e4b4a0" : "var(--aa-text-2)";
+            e.currentTarget.style.background = "rgba(213,197,168,0.05)";
+            e.currentTarget.style.color = "var(--aa-text-2)";
           }
         }}
         onMouseLeave={(e) => {
           if (!active) {
             e.currentTarget.style.background = "transparent";
-            e.currentTarget.style.color = item.crisis ? "#c99385" : "var(--aa-text-3)";
+            e.currentTarget.style.color = "var(--aa-text-3)";
           }
         }}
       >
         <Icon
           size={16}
-          style={{ flexShrink: 0, color: active ? (item.crisis ? "var(--aa-coral)" : "var(--aa-amber)") : undefined }}
+          style={{ flexShrink: 0, color: active ? "var(--aa-amber)" : undefined }}
         />
         <span style={{ flex: 1 }}>{item.name}</span>
 
@@ -173,16 +164,9 @@ export function Sidebar({ mobileOpen, onClose, isPremium = false, userName = "Ne
         ) : null}
 
         {/* Pro badge */}
-        {item.premium && !isPremium && item.name !== "Crisis Mode" ? (
+        {item.premium && !isPremium ? (
           <span style={{ marginLeft: "auto", padding: "2px 7px", borderRadius: 100, background: "rgba(213,197,168,0.08)", border: "1px solid rgba(213,197,168,0.2)", fontSize: "0.62rem", fontWeight: 800, textTransform: "uppercase", color: "var(--aa-amber)", flexShrink: 0, letterSpacing: "0.05em" }}>
             PRO
-          </span>
-        ) : null}
-
-        {/* Crisis Mode free badge */}
-        {item.name === "Crisis Mode" && !isPremium ? (
-          <span style={{ marginLeft: "auto", padding: "2px 7px", borderRadius: 100, background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.22)", fontSize: "0.62rem", fontWeight: 800, textTransform: "uppercase", color: "var(--aa-green)", flexShrink: 0, letterSpacing: "0.05em" }}>
-            Free
           </span>
         ) : null}
       </Link>

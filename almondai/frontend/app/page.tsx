@@ -166,16 +166,16 @@ export default function LandingPage() {
           .pricing-card{padding:26px 20px!important}
         }
 
-        .feat-card { transition: background 0.22s ease, transform 0.22s ease, box-shadow 0.22s ease; }
+        .feat-card { transition: background 0.26s var(--aa-ease), transform 0.26s var(--aa-ease), box-shadow 0.26s var(--aa-ease); }
         .feat-card:hover { transform: translateY(-3px); box-shadow: 0 16px 40px rgba(0,0,0,0.45); }
 
-        .pricing-card { transition: transform 0.2s ease, box-shadow 0.2s ease; }
+        .pricing-card { transition: transform 0.26s var(--aa-ease), box-shadow 0.26s var(--aa-ease); }
         .pricing-card:hover { transform: translateY(-4px); }
 
         .faq-item { transition: background 0.18s; }
         .faq-item:hover { background: rgba(255,255,255,0.02) !important; }
 
-        .testimonial-card { transition: border-color 0.2s, transform 0.22s; }
+        .testimonial-card { transition: border-color 0.26s var(--aa-ease), transform 0.26s var(--aa-ease); }
         .testimonial-card:hover { transform: translateY(-4px); }
       `}</style>
 

@@ -165,7 +165,7 @@ export default function InsightsPage() {
   const ringColor = readinessColor(readiness);
 
   return (
-    <div className="aa-anim-fade-up space-y-6">
+    <div className="aa-stagger space-y-6">
       {!isPremium && showUpgradePrompt ? (
         <section className="rounded-xl border border-[#7a3f30] bg-[#2a1d1b] p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -188,7 +188,7 @@ export default function InsightsPage() {
           </div>
           <div className="text-right">
             <p className="text-xs text-[#b7ada0]">Last analyzed: {analysis?.generated_at ? new Date(analysis.generated_at).toLocaleString() : "Never"}</p>
-            <button type="button" onClick={() => void runFullAnalysis()} className="mt-2 rounded-xl bg-[#fff2de] px-4 py-2 text-sm font-semibold text-[#392f1b]">
+            <button type="button" onClick={() => void runFullAnalysis()} className="aa-press mt-2 rounded-xl bg-[#fff2de] px-4 py-2 text-sm font-semibold text-[#392f1b] transition-all duration-200 hover:bg-[#fff8ef]">
               Run Full Analysis
             </button>
           </div>
@@ -243,7 +243,7 @@ export default function InsightsPage() {
                       key={item.subject}
                       type="button"
                       onClick={() => setSubjectFilter((prev) => (prev === item.subject ? null : item.subject))}
-                      className={`rounded-lg border px-2 py-2 text-left ${tone} ${subjectFilter === item.subject ? "ring-1 ring-[#fff2de]" : ""}`}
+                      className={`aa-press rounded-lg border px-2 py-2 text-left transition-all duration-200 ${tone} ${subjectFilter === item.subject ? "ring-1 ring-[#fff2de]" : ""}`}
                     >
                       <p className="text-xs text-[#fff2de]">{item.subject}</p>
                       <p className="text-sm font-semibold text-[#fff2de]">{item.average}</p>

@@ -33,7 +33,7 @@ export function ChatMessage({ role, content, isStreaming = false, personalized =
   };
 
   return (
-    <div className="group w-full">
+    <div className="group aa-anim-fade-up w-full">
       {isUser ? (
         <div className="flex justify-end">
           <div className="max-w-[75%] rounded-2xl rounded-br-sm border border-[#4c463d] bg-[#1f1f1f] px-4 py-3 text-sm text-[#e5e2e1]">

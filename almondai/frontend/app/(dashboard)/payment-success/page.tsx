@@ -17,7 +17,7 @@ export default function PaymentSuccessPage() {
   const planLabel = PLAN_LABELS[planCode] || "your plan";
 
   return (
-    <div className="mx-auto max-w-3xl rounded-2xl border border-[#2f5a38] bg-[#15201a] p-8 text-center">
+    <div className="aa-anim-bounce-in mx-auto max-w-3xl rounded-2xl border border-[#2f5a38] bg-[#15201a] p-8 text-center">
       <CheckCircle2 className="mx-auto h-14 w-14 text-[#7fd69a]" />
       <h1 className="mt-4 font-headline text-4xl font-bold text-[#e8ffe9]">Payment Successful</h1>
       <p className="mt-3 text-sm text-[#c8f7d2]">

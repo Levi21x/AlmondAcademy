@@ -7,9 +7,9 @@ logger = logging.getLogger(__name__)
 
 
 class ModelChoice(str, Enum):
-    PREMIUM = "premium"   # openai/gpt-oss-120b:free  — deep reasoning
-    DEFAULT = "default"   # qwen/qwen3-next-80b-a3b-instruct:free — standard
-    FAST = "fast"         # nvidia/nemotron-nano-9b-v2:free — quick / voice
+    PREMIUM = "premium"   # openai/gpt-oss-120b:free              — deep reasoning
+    DEFAULT = "default"   # openrouter/owl-alpha                    — agentic / structured JSON
+    FAST = "fast"         # nvidia/nemotron-nano-9b-v2:free        — quick / voice
 
 
 def route_model(

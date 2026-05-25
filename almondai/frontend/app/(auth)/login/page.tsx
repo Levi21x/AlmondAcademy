@@ -126,7 +126,7 @@ export default function LoginPage() {
             </div>
           )}
 
-          <form style={{ display: "flex", flexDirection: "column", gap: 16 }} onSubmit={onSubmit} noValidate>
+          <form className="aa-stagger" style={{ display: "flex", flexDirection: "column", gap: 16 }} onSubmit={onSubmit} noValidate>
             <Input
               label="Email"
               type="email"

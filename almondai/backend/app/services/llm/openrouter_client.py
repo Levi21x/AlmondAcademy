@@ -13,7 +13,7 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 OPENROUTER_MODELS = {
     "premium": "openai/gpt-oss-120b:free",
-    "default": "qwen/qwen3-next-80b-a3b-instruct:free",
+    "default": "openrouter/owl-alpha",  # structured JSON / agentic tasks
     "fast": "nvidia/nemotron-nano-9b-v2:free",
 }
 
@@ -42,7 +42,10 @@ class OpenRouterLLMClient:
 
     def _is_quota_error(self, exc: Exception) -> bool:
         msg = str(exc).lower()
-        return any(tok in msg for tok in ("429", "rate limit", "quota", "insufficient_quota"))
+        return any(tok in msg for tok in (
+            "429", "rate limit", "quota", "insufficient_quota",
+            "no endpoints found", "404",  # model unavailable / not found on this account
+        ))
 
     async def generate_sync(
         self,
