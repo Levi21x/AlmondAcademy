@@ -169,17 +169,18 @@ def _get_latest_active_plan_row(client, user_id: str, exam_id: str) -> Dict[str,
 
 def _normalize_plan_row(row: Dict[str, Any], exam: Dict[str, Any]) -> Dict[str, Any]:
     plan_data = row.get("plan_data") or {}
-    exam_day = _parse_date(exam["exam_date"]).isoformat()
+    exam_day = _parse_date(exam["exam_date"])
+    # Spread plan_data first so the explicit authoritative values below always take precedence.
     return {
+        **plan_data,
         "id": row["id"],
         "exam_id": row["exam_id"],
         "exam_name": exam.get("exam_name"),
-        "exam_date": exam_day,
-        "days_remaining": int(row.get("days_remaining", 0) or 0),
+        "exam_date": exam_day.isoformat(),
+        "days_remaining": max(_days_remaining(exam_day), 0),  # Always recalculate from today.
         "generated_at": row.get("generated_at"),
         "is_active": bool(row.get("is_active", True)),
         "plan_data": plan_data,
-        **plan_data,
     }
 
 

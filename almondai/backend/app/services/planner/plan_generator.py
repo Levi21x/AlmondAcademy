@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List
 
 from app.services.llm.openrouter_client import generate_with_fallback_sync
@@ -238,7 +238,7 @@ IMPORTANT: Only generate topics for these subjects: {selected_subjects}. Do not 
         "exam_name": exam_name,
         "exam_date": str(exam_date),
         "days_remaining": days_remaining,
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "student_category": student_category,
         **plan,
     }

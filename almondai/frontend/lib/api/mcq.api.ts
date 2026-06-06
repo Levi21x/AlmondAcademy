@@ -266,3 +266,138 @@ export async function gainAlmond(token: string, reason = "correct_streak"): Prom
   const payload = (await res.json()) as ApiEnvelope<AlmondStatus>;
   return payload.data;
 }
+
+// ─── AI Question Generation ───────────────────────────────────────────────────
+
+export interface GenerateQuestionsParams {
+  subject: string;
+  topic: string;
+  count?: number;
+  difficulty?: Difficulty;
+  student_category?: string;
+}
+
+export async function generateQuestions(token: string, params: GenerateQuestionsParams): Promise<{ questions: MCQQuestion[]; generated_count: number }> {
+  const res = await fetch(`${apiBase}/api/v1/mcq/generate`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(params),
+  });
+
+  if (!res.ok) {
+    let message = "Failed to generate MCQ questions";
+    try {
+      const payload = await res.json();
+      message = payload?.detail?.message ?? payload?.message ?? message;
+    } catch { /* keep fallback */ }
+    throw new Error(message);
+  }
+
+  const payload = (await res.json()) as ApiEnvelope<{ questions: MCQQuestion[]; generated_count: number }>;
+  return payload.data;
+}
+
+// ─── Compete Rooms ────────────────────────────────────────────────────────────
+
+export interface CompeteRoom {
+  id: string;
+  code: string;
+  host_user_id: string;
+  subject: string;
+  topic: string | null;
+  status: "waiting" | "active" | "completed";
+  question_ids: string[];
+  question_count: number;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface CompeteParticipant {
+  user_id: string;
+  display_name: string | null;
+  score: number;
+  finished_at: string | null;
+}
+
+export interface CompeteAnswerResult {
+  is_correct: boolean;
+  correct_option: "a" | "b" | "c" | "d";
+  explanation: string;
+  score: number;
+  is_finished: boolean;
+}
+
+export async function createCompeteRoom(
+  token: string,
+  data: { subject: string; topic?: string; question_count?: number },
+): Promise<{ room: CompeteRoom; questions: MCQQuestion[] }> {
+  const res = await fetch(`${apiBase}/api/v1/mcq/compete/rooms`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error("Failed to create compete room");
+  const payload = (await res.json()) as ApiEnvelope<{ room: CompeteRoom; questions: MCQQuestion[] }>;
+  return payload.data;
+}
+
+export async function joinCompeteRoom(
+  token: string,
+  code: string,
+  displayName?: string,
+): Promise<{ room: CompeteRoom; questions: MCQQuestion[]; participants: CompeteParticipant[] }> {
+  const res = await fetch(`${apiBase}/api/v1/mcq/compete/rooms/${code}/join`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ display_name: displayName ?? "Player" }),
+  });
+  if (!res.ok) {
+    let message = "Failed to join room";
+    try {
+      const p = await res.json();
+      message = p?.detail?.message ?? p?.message ?? message;
+    } catch { /* keep fallback */ }
+    throw new Error(message);
+  }
+  const payload = (await res.json()) as ApiEnvelope<{ room: CompeteRoom; questions: MCQQuestion[]; participants: CompeteParticipant[] }>;
+  return payload.data;
+}
+
+export async function getCompeteRoom(
+  token: string,
+  code: string,
+): Promise<{ room: CompeteRoom; participants: CompeteParticipant[] }> {
+  const res = await fetch(`${apiBase}/api/v1/mcq/compete/rooms/${code}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to fetch room");
+  const payload = (await res.json()) as ApiEnvelope<{ room: CompeteRoom; participants: CompeteParticipant[] }>;
+  return payload.data;
+}
+
+export async function startCompeteRoom(token: string, code: string): Promise<void> {
+  const res = await fetch(`${apiBase}/api/v1/mcq/compete/rooms/${code}/start`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to start room");
+}
+
+export async function submitCompeteAnswer(
+  token: string,
+  code: string,
+  data: { question_id: string; selected_option: "a" | "b" | "c" | "d"; time_taken_seconds?: number },
+): Promise<CompeteAnswerResult> {
+  const res = await fetch(`${apiBase}/api/v1/mcq/compete/rooms/${code}/submit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error("Failed to submit answer");
+  const payload = (await res.json()) as ApiEnvelope<CompeteAnswerResult>;
+  return payload.data;
+}

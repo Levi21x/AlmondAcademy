@@ -19,6 +19,7 @@ from app.api.routes.visuals import router as visuals_router
 from app.api.routes.payments import router as payments_router
 from app.api.routes.peer import router as peer_router
 from app.api.routes.feedback import router as feedback_router
+from app.api.routes.clinical import router as clinical_router
 from app.core.config import clear_settings_cache, get_settings
 from app.middleware.error_handler import register_error_handlers
 
@@ -54,6 +55,7 @@ app.include_router(visuals_router)
 app.include_router(payments_router)
 app.include_router(peer_router)
 app.include_router(feedback_router)
+app.include_router(clinical_router)
 
 
 @app.on_event("startup")

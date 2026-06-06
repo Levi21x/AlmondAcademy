@@ -122,7 +122,7 @@ export function PromptInputBox({
 
   return (
     <Tooltip.Provider>
-      <div className="w-full rounded-3xl border border-[#353534] bg-[#1f1f1f] p-3 shadow-card">
+      <div className="w-full rounded-3xl border border-[#3d3b38] bg-[#242422] p-3 shadow-[0_2px_24px_rgba(0,0,0,0.45)]">
         <textarea
           ref={textareaRef}
           rows={1}
@@ -136,7 +136,7 @@ export function PromptInputBox({
             }
           }}
           placeholder={activePlaceholder}
-          className="max-h-36 min-h-[56px] w-full resize-none bg-transparent px-2 py-2 text-[15px] leading-relaxed text-[#e5e2e1] outline-none placeholder:text-[#9d9488]"
+          className="max-h-36 min-h-[56px] w-full resize-none bg-transparent px-2 py-2 text-[15px] leading-relaxed text-[#e5e2e1] outline-none placeholder:text-[#6b6460]"
         />
 
         <div className="mt-2 flex flex-wrap items-center justify-between gap-3 px-1">

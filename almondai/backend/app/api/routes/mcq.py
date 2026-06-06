@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
 import random
+import string
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -12,6 +13,7 @@ from app.middleware.auth_middleware import require_auth
 from app.services.achievements_service import achievements_service
 from app.services.almonds_service import AlmondsService
 from app.services.auth_service import AuthService
+from app.services.mcq.mcq_generator import generate_and_store_questions
 from app.services.memory.memory_service import MemoryService
 from app.services.streak_service import StreakService
 
@@ -134,6 +136,30 @@ class CompleteSessionPayload(BaseModel):
 
 class AlmondReasonPayload(BaseModel):
     reason: str = Field(default="manual")
+
+
+class GenerateQuestionsPayload(BaseModel):
+    subject: str
+    topic: str
+    count: int = Field(default=10, ge=1, le=20)
+    difficulty: Optional[Literal["easy", "medium", "hard"]] = None
+    student_category: Optional[str] = None
+
+
+class CreateCompeteRoomPayload(BaseModel):
+    subject: str
+    topic: Optional[str] = None
+    question_count: int = Field(default=10, ge=5, le=20)
+
+
+class JoinCompeteRoomPayload(BaseModel):
+    display_name: Optional[str] = None
+
+
+class SubmitCompeteAnswerPayload(BaseModel):
+    question_id: str
+    selected_option: Literal["a", "b", "c", "d"]
+    time_taken_seconds: Optional[int] = Field(default=None, ge=0)
 
 
 @router.get("/questions")
@@ -511,3 +537,295 @@ def get_daily_status(user=Depends(require_auth), service: AuthService = Depends(
             "practice_streak_days": _practice_streak_days(client=client, user_id=user_id),
         }
     )
+
+
+# ─── AI Question Generation ───────────────────────────────────────────────────
+
+@router.post("/generate")
+async def generate_questions(payload: GenerateQuestionsPayload, user=Depends(require_auth)):
+    try:
+        questions = await generate_and_store_questions(
+            subject=payload.subject,
+            topic=payload.topic,
+            count=payload.count,
+            difficulty=payload.difficulty,
+            student_category=payload.student_category,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": True, "message": f"Failed to generate questions: {exc}", "code": "MCQ_GENERATE_FAILED"},
+        ) from exc
+
+    return _success({"questions": questions, "generated_count": len(questions)})
+
+
+# ─── Compete Rooms ────────────────────────────────────────────────────────────
+
+def _make_room_code() -> str:
+    return "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+
+
+def _get_room(client, code: str) -> Dict[str, Any]:
+    rows = (
+        client.table("mcq_compete_rooms")
+        .select("*")
+        .eq("code", code.upper())
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail={"error": True, "message": "Room not found", "code": "ROOM_NOT_FOUND"})
+    return rows[0]
+
+
+@router.post("/compete/rooms")
+async def create_compete_room(payload: CreateCompeteRoomPayload, user=Depends(require_auth)):
+    client = get_supabase_admin_client()
+    user_id = user["user_id"]
+
+    # Generate questions for the room
+    try:
+        questions = await generate_and_store_questions(
+            subject=payload.subject,
+            topic=payload.topic or payload.subject,
+            count=payload.question_count,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": True, "message": f"Failed to generate room questions: {exc}", "code": "ROOM_GENERATE_FAILED"},
+        ) from exc
+
+    question_ids = [q["id"] for q in questions]
+
+    # Try up to 5 times to get a unique code
+    code = None
+    for _ in range(5):
+        candidate = _make_room_code()
+        existing = (
+            client.table("mcq_compete_rooms")
+            .select("id")
+            .eq("code", candidate)
+            .limit(1)
+            .execute()
+            .data
+        )
+        if not existing:
+            code = candidate
+            break
+
+    if not code:
+        raise HTTPException(status_code=500, detail={"error": True, "message": "Could not generate room code", "code": "ROOM_CODE_FAILED"})
+
+    room_row = (
+        client.table("mcq_compete_rooms")
+        .insert({
+            "code": code,
+            "host_user_id": user_id,
+            "subject": payload.subject,
+            "topic": payload.topic,
+            "status": "waiting",
+            "question_ids": question_ids,
+            "question_count": payload.question_count,
+        })
+        .execute()
+        .data
+        or []
+    )
+    if not room_row:
+        raise HTTPException(status_code=500, detail={"error": True, "message": "Failed to create room", "code": "ROOM_CREATE_FAILED"})
+
+    room = room_row[0]
+
+    # Auto-join as host
+    client.table("mcq_compete_participants").insert({
+        "room_id": room["id"],
+        "user_id": user_id,
+        "display_name": "Host",
+        "score": 0,
+        "answers": [],
+    }).execute()
+
+    return _success({"room": room, "questions": questions})
+
+
+@router.post("/compete/rooms/{code}/join")
+def join_compete_room(code: str, payload: JoinCompeteRoomPayload, user=Depends(require_auth)):
+    client = get_supabase_admin_client()
+    user_id = user["user_id"]
+
+    room = _get_room(client, code)
+
+    if room["status"] != "waiting":
+        raise HTTPException(status_code=400, detail={"error": True, "message": "Room is not accepting players", "code": "ROOM_NOT_WAITING"})
+
+    # Check if already joined
+    existing_participant = (
+        client.table("mcq_compete_participants")
+        .select("id")
+        .eq("room_id", room["id"])
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+
+    if not existing_participant:
+        client.table("mcq_compete_participants").insert({
+            "room_id": room["id"],
+            "user_id": user_id,
+            "display_name": payload.display_name or "Player",
+            "score": 0,
+            "answers": [],
+        }).execute()
+
+    # Fetch questions (without correct_option)
+    question_ids = room.get("question_ids") or []
+    questions = []
+    if question_ids:
+        questions = (
+            client.table("mcq_questions")
+            .select("id,subject,topic,difficulty,question_text,option_a,option_b,option_c,option_d,is_high_yield")
+            .in_("id", question_ids)
+            .execute()
+            .data
+            or []
+        )
+
+    # Fetch participants
+    participants = (
+        client.table("mcq_compete_participants")
+        .select("user_id,display_name,score,finished_at")
+        .eq("room_id", room["id"])
+        .execute()
+        .data
+        or []
+    )
+
+    return _success({"room": room, "questions": questions, "participants": participants})
+
+
+@router.get("/compete/rooms/{code}")
+def get_compete_room(code: str, user=Depends(require_auth)):
+    client = get_supabase_admin_client()
+    room = _get_room(client, code)
+
+    participants = (
+        client.table("mcq_compete_participants")
+        .select("user_id,display_name,score,finished_at,answers")
+        .eq("room_id", room["id"])
+        .execute()
+        .data
+        or []
+    )
+
+    return _success({"room": room, "participants": participants})
+
+
+@router.post("/compete/rooms/{code}/start")
+def start_compete_room(code: str, user=Depends(require_auth)):
+    client = get_supabase_admin_client()
+    user_id = user["user_id"]
+    room = _get_room(client, code)
+
+    if str(room["host_user_id"]) != str(user_id):
+        raise HTTPException(status_code=403, detail={"error": True, "message": "Only the host can start the room", "code": "NOT_HOST"})
+
+    if room["status"] != "waiting":
+        raise HTTPException(status_code=400, detail={"error": True, "message": "Room is not in waiting state", "code": "ROOM_NOT_WAITING"})
+
+    client.table("mcq_compete_rooms").update({
+        "status": "active",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", room["id"]).execute()
+
+    return _success({"started": True})
+
+
+@router.post("/compete/rooms/{code}/submit")
+def submit_compete_answer(code: str, payload: SubmitCompeteAnswerPayload, user=Depends(require_auth)):
+    client = get_supabase_admin_client()
+    user_id = user["user_id"]
+    room = _get_room(client, code)
+
+    if room["status"] != "active":
+        raise HTTPException(status_code=400, detail={"error": True, "message": "Room is not active", "code": "ROOM_NOT_ACTIVE"})
+
+    # Look up question answer
+    question_rows = (
+        client.table("mcq_questions")
+        .select("id,correct_option,explanation")
+        .eq("id", payload.question_id)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not question_rows:
+        raise HTTPException(status_code=404, detail={"error": True, "message": "Question not found", "code": "QUESTION_NOT_FOUND"})
+
+    question = question_rows[0]
+    correct_option = str(question.get("correct_option") or "").lower()
+    is_correct = payload.selected_option.lower() == correct_option
+
+    # Get current participant state
+    participant_rows = (
+        client.table("mcq_compete_participants")
+        .select("id,score,answers")
+        .eq("room_id", room["id"])
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not participant_rows:
+        raise HTTPException(status_code=404, detail={"error": True, "message": "Not a participant in this room", "code": "NOT_PARTICIPANT"})
+
+    participant = participant_rows[0]
+    current_answers = participant.get("answers") or []
+    new_answer = {
+        "question_id": payload.question_id,
+        "selected_option": payload.selected_option,
+        "is_correct": is_correct,
+        "time_taken_seconds": payload.time_taken_seconds,
+    }
+    updated_answers = [*current_answers, new_answer]
+    new_score = participant["score"] + (1 if is_correct else 0)
+
+    # Check if this was the last question
+    total_questions = room.get("question_count", 10)
+    is_finished = len(updated_answers) >= total_questions
+    update_payload: Dict[str, Any] = {"score": new_score, "answers": updated_answers}
+    if is_finished:
+        update_payload["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+    client.table("mcq_compete_participants").update(update_payload).eq("id", participant["id"]).execute()
+
+    # Check if all participants finished → complete room
+    if is_finished:
+        all_participants = (
+            client.table("mcq_compete_participants")
+            .select("finished_at")
+            .eq("room_id", room["id"])
+            .execute()
+            .data
+            or []
+        )
+        if all(p.get("finished_at") for p in all_participants):
+            client.table("mcq_compete_rooms").update({
+                "status": "completed",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", room["id"]).execute()
+
+    return _success({
+        "is_correct": is_correct,
+        "correct_option": correct_option,
+        "explanation": question.get("explanation") or "",
+        "score": new_score,
+        "is_finished": is_finished,
+    })

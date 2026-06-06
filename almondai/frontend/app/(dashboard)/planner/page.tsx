@@ -46,8 +46,9 @@ import {
 } from "@/lib/api/planner.api";
 import { PlanGraph } from "@/components/graph/PlanGraph";
 import { SyllabusMapCanvas } from "@/components/syllabus/SyllabusMapCanvas";
-import { CrisisContent } from "@/components/crisis/CrisisContent";
-import { getSubjects } from "@/lib/api/syllabus.api";
+import { ClinicalMode } from "@/components/clinical/ClinicalMode";
+import { CrisisWarRoom } from "@/components/crisis/CrisisWarRoom";
+import { getSubjects, type SubjectProgress } from "@/lib/api/syllabus.api";
 import { useProfile } from "@/lib/hooks/useProfile";
 import { useSubscription } from "@/lib/hooks/useSubscription";
 import { useAuthStore } from "@/lib/store/authStore";
@@ -76,6 +77,10 @@ function priorityPill(priority: string) {
   return "bg-[#2a2b2a] text-[#c3cec3]";
 }
 
+function formatDate(iso: string) {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+
 function buildTutorPrompt(topic: PlanTopic, day: PlanDay, category: string, minutes: number) {
   const styles: Record<string, string> = {
     survivor:          "in simple, direct bullet points. Focus ONLY on what will appear in the exam.",
@@ -95,7 +100,7 @@ const TABS: Array<{ key: ActiveTab; label: string; icon: React.ElementType; desc
   { key: "map",      label: "Syllabus Map",     icon: Map,      description: "Visual knowledge graph" },
   { key: "plan",     label: "Planner",          icon: Calendar, description: "Adaptive study plan" },
   { key: "crisis",   label: "Crisis Mode",      icon: Zap,      description: "Emergency prep" },
-  { key: "clinical", label: "Clinical",         icon: Brain,    description: "Coming soon" },
+  { key: "clinical", label: "Clinical",         icon: Brain,    description: "Virtual ward simulation" },
 ];
 
 function TabBar({ active, onChange }: { active: ActiveTab; onChange: (t: ActiveTab) => void }) {
@@ -112,14 +117,12 @@ function TabBar({ active, onChange }: { active: ActiveTab; onChange: (t: ActiveT
     >
       {TABS.map(({ key, label, icon: Icon }) => {
         const isActive = active === key;
-        const isSoon = key === "clinical";
         return (
           <button
             key={key}
             type="button"
             className="aa-press"
-            disabled={isSoon}
-            onClick={() => !isSoon && onChange(key)}
+            onClick={() => onChange(key)}
             style={{
               display: "flex",
               alignItems: "center",
@@ -128,8 +131,8 @@ function TabBar({ active, onChange }: { active: ActiveTab; onChange: (t: ActiveT
               border: "none",
               borderBottom: isActive ? "2px solid var(--aa-amber)" : "2px solid transparent",
               background: "transparent",
-              cursor: isSoon ? "default" : "pointer",
-              color: isActive ? "var(--aa-amber)" : isSoon ? "rgba(143,136,126,0.4)" : "var(--aa-text-3)",
+              cursor: "pointer",
+              color: isActive ? "var(--aa-amber)" : "var(--aa-text-3)",
               fontSize: "0.78rem",
               fontWeight: isActive ? 700 : 500,
               fontFamily: "var(--aa-fb)",
@@ -138,20 +141,11 @@ function TabBar({ active, onChange }: { active: ActiveTab; onChange: (t: ActiveT
               flexShrink: 0,
               marginBottom: -1,
             }}
-            onMouseEnter={(e) => { if (!isActive && !isSoon) e.currentTarget.style.color = "var(--aa-text-1)"; }}
-            onMouseLeave={(e) => { if (!isActive && !isSoon) e.currentTarget.style.color = "var(--aa-text-3)"; }}
+            onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.color = "var(--aa-text-1)"; }}
+            onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.color = "var(--aa-text-3)"; }}
           >
             <Icon size={14} strokeWidth={isActive ? 2.2 : 1.9} />
             {label}
-            {isSoon && (
-              <span style={{
-                fontSize: "0.52rem", padding: "1px 5px", borderRadius: 100,
-                background: "rgba(53,53,52,0.6)", color: "rgba(143,136,126,0.5)",
-                fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em",
-              }}>
-                soon
-              </span>
-            )}
             {key === "crisis" && !isActive && (
               <span style={{
                 fontSize: "0.52rem", padding: "1px 5px", borderRadius: 100,
@@ -177,7 +171,7 @@ function PlannerContent() {
   const { isPremium } = useSubscription();
 
   const [exams, setExams] = useState<StudentExam[]>([]);
-  const [subjects, setSubjects] = useState<string[]>([]);
+  const [rawSubjectRows, setRawSubjectRows] = useState<SubjectProgress[]>([]);
   const [loading, setLoading] = useState(true);
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [expandedPlanId, setExpandedPlanId] = useState<string | null>(null);
@@ -202,6 +196,14 @@ function PlannerContent() {
     const d = new Date(); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10);
   }, []);
 
+  const todayIso = useMemo(() => new Date().toISOString().slice(0, 10), []);
+
+  const subjects = useMemo(() => {
+    const year = profile?.current_year;
+    const filtered = (year && year >= 1 && year <= 4) ? rawSubjectRows.filter((s) => s.year === year) : rawSubjectRows;
+    return filtered.map((s) => s.name);
+  }, [rawSubjectRows, profile]);
+
   const hasAnyActivePlan = useMemo(() => exams.some((e) => e.has_active_plan), [exams]);
 
   useEffect(() => {
@@ -210,10 +212,7 @@ function PlannerContent() {
     void Promise.all([getExams(token), getSubjects(token)])
       .then(([examRows, subjectRows]) => {
         setExams(examRows);
-        const profileData = useAuthStore.getState().profile;
-        const year = profileData?.current_year;
-        const filtered = (year && year >= 1 && year <= 4) ? subjectRows.filter((s) => s.year === year) : subjectRows;
-        setSubjects(filtered.map((s) => s.name));
+        setRawSubjectRows(subjectRows);
       })
       .catch(() => setError("Failed to load planner data."))
       .finally(() => setLoading(false));
@@ -433,8 +432,7 @@ function PlannerContent() {
             {exams.map((exam) => {
               const plan = plansByExamId[exam.id];
               const isExpanded = expandedPlanId === exam.id;
-              const todayIso = new Date().toISOString().slice(0, 10);
-              const examTodayPlan = plan?.days?.find((d) => d.date === todayIso) ?? plan?.days?.[0] ?? null;
+              const examTodayPlan = plan?.days?.find((d) => d.date === todayIso) ?? null;
               return (
                 <article key={exam.id} className="rounded-xl border border-[#353534] bg-[#1f1f1f] p-5">
                   <div className="flex flex-wrap items-start justify-between gap-4">
@@ -473,7 +471,7 @@ function PlannerContent() {
                         {generatingExamId === exam.id ? "Generating your plan..." : "Generate Study Plan"}
                       </button>
                     )}
-                    <button type="button" onClick={() => void onDeleteExam(exam.id)} className="ml-auto rounded-lg p-2 text-[#c39a93] hover:bg-[#3b2523] hover:text-[#ffb4ab]" aria-label={`Delete ${exam.exam_name}`}>
+                    <button type="button" onClick={() => { if (window.confirm(`Delete "${exam.exam_name}"? This will also remove any associated study plan.`)) void onDeleteExam(exam.id); }} className="ml-auto rounded-lg p-2 text-[#c39a93] hover:bg-[#3b2523] hover:text-[#ffb4ab]" aria-label={`Delete ${exam.exam_name}`}>
                       <Trash2 className="h-4 w-4" strokeWidth={1.9} />
                     </button>
                   </div>
@@ -507,7 +505,7 @@ function PlannerContent() {
                               <p className="mt-2 text-xs text-[#8f887e]">Generated: {new Date(plan.generated_at).toLocaleString()}</p>
                             </div>
                             <div className="flex items-center gap-2">
-                              <button type="button" onClick={() => setExpandedPlanId(null)} className="rounded-lg border border-[#4c463d] px-2 py-1 text-sm text-[#cec5b9]">X</button>
+                              <button type="button" onClick={() => setExpandedPlanId(null)} className="rounded-lg border border-[#4c463d] p-1.5 text-[#cec5b9]"><X className="h-4 w-4" /></button>
                               <button type="button" onClick={() => void onGeneratePlan(exam.id, true)} disabled={generatingExamId === exam.id} className="rounded-lg border border-[#4c463d] px-3 py-1.5 text-sm text-[#cec5b9]">
                                 {generatingExamId === exam.id ? "Generating..." : "Regenerate"}
                               </button>
@@ -572,7 +570,7 @@ function PlannerContent() {
                                   <div key={`${day.day}-${day.date}`} className={`rounded-lg border p-3 ${isToday ? "border-[#d5c5a8] bg-[#1b1a19]" : "border-[#353534] bg-[#131313]"} ${isPast ? "opacity-70" : ""}`}>
                                     <button type="button" className="flex w-full items-center justify-between gap-3 text-left" onClick={() => setExpandedDays((prev) => ({ ...prev, [day.day]: !prev[day.day] }))}>
                                       <div>
-                                        <p className="text-sm font-semibold text-[#e5e2e1]">Day {day.day} · {day.date}</p>
+                                        <p className="text-sm font-semibold text-[#e5e2e1]">Day {day.day} · {formatDate(day.date)}</p>
                                         <p className="text-xs text-[#b7ada0]">{day.focus}</p>
                                       </div>
                                       <div className="flex items-center gap-3">
@@ -677,27 +675,6 @@ function PlannerContent() {
   );
 }
 
-// ── Coming soon placeholder ────────────────────────────────────────────────────
-
-function ClinicalComingSoon() {
-  return (
-    <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 14, padding: 40 }}>
-      <span style={{ fontSize: 48, lineHeight: 1 }}>🩺</span>
-      <h2 style={{ fontFamily: "var(--aa-fd)", fontSize: "1.5rem", fontWeight: 800, color: "var(--aa-text-1)" }}>Clinical Mode</h2>
-      <p style={{ fontSize: "0.85rem", color: "var(--aa-text-3)", textAlign: "center", maxWidth: 340, lineHeight: 1.6 }}>
-        Virtual ward simulations, patient encounters, case sheet evaluation, and viva practice — arriving in the next update.
-      </p>
-      <span style={{
-        marginTop: 4, padding: "5px 14px", borderRadius: 100,
-        border: "1px solid rgba(213,197,168,0.18)", color: "var(--aa-amber)",
-        fontSize: "0.7rem", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
-      }}>
-        Coming Soon
-      </span>
-    </div>
-  );
-}
-
 // ── Page wrapper with tab routing ─────────────────────────────────────────────
 
 function PlannerPageInner() {
@@ -724,10 +701,14 @@ function PlannerPageInner() {
       {activeTab === "plan" && <PlannerContent />}
       {activeTab === "crisis" && (
         <div className="p-6">
-          <CrisisContent />
+          <CrisisWarRoom />
         </div>
       )}
-      {activeTab === "clinical" && <ClinicalComingSoon />}
+      {activeTab === "clinical" && (
+        <div className="p-6">
+          <ClinicalMode />
+        </div>
+      )}
     </div>
   );
 }

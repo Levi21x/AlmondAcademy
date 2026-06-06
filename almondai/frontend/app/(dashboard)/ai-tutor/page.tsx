@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Brain, CheckCircle2, ListChecks, Menu, PenSquare, RefreshCw, Sparkles, Trash2, X } from "lucide-react";
+import { Brain, CheckCircle2, ListChecks, Menu, PanelLeft, PenSquare, RefreshCw, Sparkles, Trash2, X } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -184,13 +184,14 @@ export default function AITutorPage() {
   const [streamingContent, setStreamingContent] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [doneActionKeys, setDoneActionKeys] = useState<Set<string>>(() => new Set());
   const [draftMessage, setDraftMessage] = useState("");
   const [hasPersonalizationMemory, setHasPersonalizationMemory] = useState(false);
   const [lastVoiceTranscript, setLastVoiceTranscript] = useState("");
   const [isSearchMode, setIsSearchMode] = useState(false);
-  const [, setLastTopicDiscussed] = useState("");
+  const [lastTopicDiscussed, setLastTopicDiscussed] = useState("");
   const [showHighYieldBanner, setShowHighYieldBanner] = useState(false);
   const [isAutoSendingPrefill, setIsAutoSendingPrefill] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -393,7 +394,8 @@ export default function AITutorPage() {
 
       if (isDirectMCQRequest || isAcceptingAfterInvite) {
         const encodedSubject = encodeURIComponent(subject || "General");
-        router.push(`/practice?subject=${encodedSubject}&mode=tutor_flow`);
+        const topicParam = lastTopicDiscussed ? `&topic=${encodeURIComponent(lastTopicDiscussed)}&generate=true` : "&generate=true";
+        router.push(`/practice?subject=${encodedSubject}&mode=tutor_flow${topicParam}`);
         return;
       }
       // ─── END MCQ REDIRECT DETECTION ──────────
@@ -525,7 +527,7 @@ export default function AITutorPage() {
         setIsStreaming(false);
       }
     },
-    [activeSessionId, isSearchMode, isStreaming, limitReached, loadSessions, messages, profile?.mode, refreshUsage, router, sourceParam, subject, token],
+    [activeSessionId, isSearchMode, isStreaming, lastTopicDiscussed, limitReached, loadSessions, messages, profile?.mode, refreshUsage, router, sourceParam, subject, token],
   );
 
   const handleTutorAction = useCallback(
@@ -535,7 +537,8 @@ export default function AITutorPage() {
         return;
       }
       if (action.type === "mcq") {
-        router.push(`/practice?subject=${encodeURIComponent(action.subject)}`);
+        const topicParam = lastTopicDiscussed ? `&topic=${encodeURIComponent(lastTopicDiscussed)}&generate=true` : "&generate=true";
+        router.push(`/practice?subject=${encodeURIComponent(action.subject)}&mode=tutor_flow${topicParam}`);
         return;
       }
       if (action.type === "visual") {
@@ -557,7 +560,7 @@ export default function AITutorPage() {
         }
       }
     },
-    [router, subject, token],
+    [lastTopicDiscussed, router, subject, token],
   );
 
   useEffect(() => {
@@ -666,17 +669,27 @@ export default function AITutorPage() {
     .trim();
 
   const SidebarContent = (
-    <div className="flex h-full min-h-0 w-full flex-col rounded-none border-r border-[#353534] bg-[#1f1f1f] md:rounded-2xl md:border md:border-[#353534] md:bg-[#1f1f1f]">
+    <div className="flex h-full min-h-0 w-full flex-col rounded-none border-r border-[#353534] bg-[#1c1c1b] md:rounded-2xl md:border md:border-[#353534] md:bg-[#1c1c1b]">
       <div className="flex items-center justify-between border-b border-[#353534] p-4">
         <h2 className="text-sm font-semibold text-[#fff2de]">Conversations</h2>
-        <button
-          type="button"
-          onClick={handleNewConversation}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-[#4c463d] bg-transparent px-2.5 py-1.5 text-xs text-[#cec5b9] transition-all duration-200 ease-in-out hover:text-[#fff2de]"
-        >
-          <PenSquare className="h-4 w-4" strokeWidth={1.9} />
-          <span>New chat</span>
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={handleNewConversation}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-[#4c463d] bg-transparent px-2.5 py-1.5 text-xs text-[#cec5b9] transition-colors hover:text-[#fff2de]"
+          >
+            <PenSquare className="h-3.5 w-3.5" strokeWidth={1.9} />
+            <span>New</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setSidebarCollapsed(true)}
+            className="hidden md:inline-flex items-center justify-center h-7 w-7 rounded-lg border border-[#4c463d] bg-transparent text-[#8f887e] transition-colors hover:text-[#e5e2e1]"
+            aria-label="Collapse sidebar"
+          >
+            <PanelLeft className="h-3.5 w-3.5" strokeWidth={1.9} />
+          </button>
+        </div>
       </div>
 
       <div className="p-4">
@@ -749,12 +762,34 @@ export default function AITutorPage() {
     </div>
   );
 
+  const isEmptyState = messages.length === 0 && !isStreaming;
+
   return (
     <div className="relative h-[calc(100dvh-6.5rem)] overflow-hidden rounded-2xl border border-[#353534] bg-[#131313] lg:h-[calc(100dvh-4rem)]">
-      <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)]">
-        <div className="hidden h-full min-h-0 md:block">{SidebarContent}</div>
+      <div className={`grid h-full min-h-0 grid-cols-1 transition-[grid-template-columns] duration-200 ${sidebarCollapsed ? "" : "md:grid-cols-[272px_minmax(0,1fr)]"}`}>
+        <div className={`hidden h-full min-h-0 md:block ${sidebarCollapsed ? "md:hidden" : ""}`}>{SidebarContent}</div>
 
         <div className="relative flex h-full min-h-0 flex-col">
+          {/* Desktop top bar — sidebar toggle + new chat when sidebar is collapsed */}
+          <div className={`hidden md:flex flex-shrink-0 items-center gap-2 px-4 pt-3 pb-0 ${sidebarCollapsed ? "" : "absolute top-0 left-0 z-10 pointer-events-none opacity-0"}`}>
+            <button
+              type="button"
+              onClick={() => setSidebarCollapsed(false)}
+              className="pointer-events-auto inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[#4c463d] bg-[#1f1f1f] text-[#8f887e] transition-colors hover:text-[#e5e2e1]"
+              aria-label="Expand sidebar"
+            >
+              <PanelLeft className="h-4 w-4" strokeWidth={1.9} />
+            </button>
+            <button
+              type="button"
+              onClick={handleNewConversation}
+              className="pointer-events-auto inline-flex h-8 items-center gap-1.5 rounded-lg border border-[#4c463d] bg-[#1f1f1f] px-2.5 text-xs text-[#cec5b9] transition-colors hover:text-[#fff2de]"
+            >
+              <PenSquare className="h-3.5 w-3.5" strokeWidth={1.9} />
+              New chat
+            </button>
+          </div>
+
           <div className="flex flex-shrink-0 items-center justify-between border-b border-[#353534] px-4 py-3 md:hidden">
             <button
               type="button"
@@ -768,7 +803,7 @@ export default function AITutorPage() {
             <div className="w-9" />
           </div>
 
-          <div ref={messagesScrollRef} className="flex-1 min-h-0 overflow-y-auto px-4 pb-4 pt-6 md:px-8">
+          <div ref={messagesScrollRef} className={`flex-1 min-h-0 overflow-y-auto px-4 pb-4 md:px-8 ${sidebarCollapsed ? "pt-3" : "pt-6"}`}>
             {showHighYieldBanner ? (
               <div style={{ maxWidth: 896, width: "100%", margin: "0 auto 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, borderRadius: 12, border: "1px solid rgba(230,200,122,0.25)", background: "linear-gradient(90deg,rgba(42,37,26,0.9),rgba(38,34,22,0.8))", padding: "10px 16px" }}>
                 <p style={{ fontFamily: "var(--aa-fb)", fontSize: "0.875rem", color: "#e6c87a", display: "flex", alignItems: "center", gap: 8 }}>
@@ -800,36 +835,40 @@ export default function AITutorPage() {
               </div>
             ) : null}
 
-            {messages.length === 0 && !isStreaming ? (
-              <div className="mx-auto flex h-full max-w-4xl flex-col items-center justify-center text-center">
-                <div style={{ width: 80, height: 80, borderRadius: "50%", background: "rgba(213,197,168,0.07)", border: "1px solid rgba(213,197,168,0.18)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 36, marginBottom: 20, boxShadow: "0 0 40px rgba(213,197,168,0.06)" }}>
-                  🌰
-                </div>
-                <h2 style={{ fontFamily: "var(--aa-fd)", fontSize: "clamp(1.6rem,4vw,2.2rem)", fontWeight: 800, color: "var(--aa-text-1)", letterSpacing: "-0.028em", lineHeight: 1.2, marginBottom: 12 }}>
-                  How can I help you study today?
-                </h2>
-                <p style={{ fontFamily: "var(--aa-fb)", fontSize: "0.82rem", color: "var(--aa-amber)", background: "rgba(213,197,168,0.08)", border: "1px solid rgba(213,197,168,0.2)", borderRadius: 100, padding: "5px 14px", display: "inline-block", marginBottom: 32, fontWeight: 500 }}>
-                  {studentCategoryLabel}
-                </p>
-                <div className="aa-stagger mt-0 grid w-full gap-3 md:grid-cols-3">
-                  {starters.map((starter, i) => {
-                    const icons = ["🧠", "🔬", "📋"];
-                    return (
+            {isEmptyState ? (
+              <div className="relative mx-auto flex h-full w-full max-w-3xl flex-col items-center justify-center px-4 pb-6">
+                {/* Ambient amber radial glow */}
+                <div style={{ position: "absolute", top: "42%", left: "50%", transform: "translate(-50%, -50%)", width: "min(700px, 100vw)", height: 420, background: "radial-gradient(ellipse at center, rgba(213,197,168,0.07) 0%, transparent 65%)", pointerEvents: "none", zIndex: 0 }} />
+
+                <div className="relative z-10 w-full text-center">
+                  <h1 style={{ fontFamily: "var(--aa-fd)", fontSize: "clamp(1.9rem, 4.8vw, 2.75rem)", fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1.15, color: "var(--aa-text-1)", marginBottom: 4 }}>
+                    Hi {profile?.full_name?.split(" ")[0] ?? "there"},
+                  </h1>
+                  <h1 style={{ fontFamily: "var(--aa-fd)", fontSize: "clamp(1.9rem, 4.8vw, 2.75rem)", fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1.15, color: "rgba(229,226,225,0.28)", marginBottom: 28 }}>
+                    what&apos;s on your mind?
+                  </h1>
+
+                  <div style={{ display: "flex", justifyContent: "center", marginBottom: 36 }}>
+                    <span style={{ fontFamily: "var(--aa-fb)", fontSize: "0.78rem", fontWeight: 600, color: "var(--aa-amber)", background: "rgba(213,197,168,0.08)", border: "1px solid rgba(213,197,168,0.18)", borderRadius: 100, padding: "5px 16px" }}>
+                      {studentCategoryLabel}
+                    </span>
+                  </div>
+
+                  {/* Chip-style suggestion starters */}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 10, justifyContent: "center", maxWidth: 640, margin: "0 auto" }}>
+                    {starters.map((starter) => (
                       <button
                         key={starter}
                         type="button"
-                        className="aa-press"
                         onClick={() => { void handleSendMessage(starter); }}
-                        style={{ borderRadius: 14, border: "1px solid rgba(76,70,61,0.4)", background: "rgba(31,31,31,0.6)", padding: "16px 18px", textAlign: "left", cursor: "pointer", transition: "all 0.18s ease", display: "flex", flexDirection: "column", gap: 10 }}
-                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = "rgba(213,197,168,0.3)"; e.currentTarget.style.background = "rgba(42,37,32,0.5)"; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = "rgba(76,70,61,0.4)"; e.currentTarget.style.background = "rgba(31,31,31,0.6)"; }}
+                        style={{ borderRadius: 100, border: "1px solid rgba(76,70,61,0.65)", background: "rgba(28,28,27,0.8)", padding: "10px 20px", fontFamily: "var(--aa-fb)", fontSize: "0.83rem", color: "#cec5b9", cursor: "pointer", transition: "border-color 0.15s, color 0.15s, background 0.15s", whiteSpace: "nowrap" }}
+                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = "rgba(213,197,168,0.45)"; e.currentTarget.style.color = "#fff2de"; e.currentTarget.style.background = "rgba(42,37,32,0.7)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = "rgba(76,70,61,0.65)"; e.currentTarget.style.color = "#cec5b9"; e.currentTarget.style.background = "rgba(28,28,27,0.8)"; }}
                       >
-                        <span style={{ fontSize: 18 }}>{icons[i % icons.length]}</span>
-                        <span style={{ fontFamily: "var(--aa-fb)", fontSize: "0.875rem", color: "var(--aa-text-1)", lineHeight: 1.45 }}>{starter}</span>
-                        <span style={{ fontFamily: "var(--aa-fb)", fontSize: "0.75rem", color: "var(--aa-amber)", opacity: 0.8 }}>Ask AlmondAI →</span>
+                        {starter}
                       </button>
-                    );
-                  })}
+                    ))}
+                  </div>
                 </div>
               </div>
             ) : (
@@ -934,7 +973,7 @@ export default function AITutorPage() {
           <div className="pointer-events-none relative h-0 flex-shrink-0">
             <div className="absolute inset-x-0 -top-20 h-20 bg-gradient-to-t from-[#131313] to-transparent" />
           </div>
-          <div className="flex-shrink-0 border-t border-[#353534] bg-[#131313] px-4 pb-4 pt-3 md:px-8">
+          <div className={`flex-shrink-0 bg-[#131313] px-4 pb-4 pt-3 md:px-8 ${isEmptyState ? "" : "border-t border-[#353534]"}`}>
             <div className="mx-auto w-full max-w-4xl">
               {isSearchMode ? (
                 <div className="mb-2 flex justify-end">
