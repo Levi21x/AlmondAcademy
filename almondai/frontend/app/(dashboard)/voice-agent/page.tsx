@@ -1,218 +1,202 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Brain, Mic, MicOff, Square, Volume2, VolumeX, ChevronDown, AlertCircle } from "lucide-react";
+import {
+  Brain,
+  Mic,
+  Volume2,
+  ChevronDown,
+  AlertCircle,
+  Radio,
+  Loader2,
+  Headphones,
+} from "lucide-react";
 
 import { useAuthStore } from "@/lib/store/authStore";
-import { useSarvamSTT } from "@/lib/hooks/useSarvamSTT";
-import { useCartesiaTTS } from "@/lib/hooks/useCartesiaTTS";
+import { useVoiceSession, type LatencyStats } from "@/lib/hooks/useVoiceSession";
 import { useSubjectList } from "@/lib/hooks/useSubjectList";
-import { askVoiceQuestion, checkVoiceHealth } from "@/lib/api/voice.api";
 import type { VoiceMessage } from "@/lib/api/voice.api";
 
-type VoiceState = "idle" | "listening" | "thinking" | "speaking";
-
-function generateSessionId(): string {
+function generateSessionId() {
   return `vs_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
-// ---------------------------------------------------------------------------
-// Waveform bar — driven by live audio level from Web Audio AnalyserNode
-// ---------------------------------------------------------------------------
-function AudioWaveform({ level, bars = 5 }: { level: number; bars?: number }) {
-  const heights = Array.from({ length: bars }, (_, i) => {
-    const center = (bars - 1) / 2;
-    const distance = Math.abs(i - center) / center; // 0 at center, 1 at edges
-    const factor = 1 - distance * 0.5;
-    return Math.max(4, Math.min(32, level * 32 * factor + Math.random() * 4));
-  });
+// ─── Waveform: bars driven by live mic RMS across all active states ───────────
+function Waveform({ level, state }: { level: number; state: string }) {
+  const BARS = 9;
+
+  const isActive = state !== "inactive";
+  const barColor =
+    state === "recording" ? "bg-red-400"
+    : state === "speaking" ? "bg-[#d5c5a8]"
+    : isActive             ? "bg-[#4c463d]"
+    : "bg-[#2a2a2a]";
 
   return (
-    <div className="flex h-8 items-end justify-center gap-1">
-      {heights.map((h, i) => (
-        <div
-          key={i}
-          className="w-1 rounded-full bg-red-400 transition-all duration-75"
-          style={{ height: `${h}px` }}
-        />
-      ))}
+    <div className="flex h-8 items-center justify-center gap-[3px]">
+      {Array.from({ length: BARS }, (_, i) => {
+        const distFromCenter = Math.abs(i - Math.floor(BARS / 2));
+        const base  = 0.3 + (1 - distFromCenter / (BARS / 2)) * 0.4;
+        const jitter = Math.sin((i + 1) * 1.9) * 0.12;
+        let height: number;
+
+        if (!isActive || state === "processing") {
+          height = 3 + base * 3;
+        } else {
+          // Show live mic levels in listening/recording/speaking states
+          height = 4 + (base + jitter + level * 0.65) * 26;
+        }
+
+        return (
+          <div
+            key={i}
+            className={`w-[3px] rounded-full transition-all duration-75 ${barColor}`}
+            style={{ height: `${Math.round(height)}px` }}
+          />
+        );
+      })}
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Main page
-// ---------------------------------------------------------------------------
+// ─── Latency panel ───────────────────────────────────────────────────────────
+
+function LatencyPanel({ stats }: { stats: LatencyStats }) {
+  const row = (label: string, value: number | null | undefined, highlight?: boolean) =>
+    value != null ? (
+      <div key={label} className={`flex justify-between gap-4 ${highlight ? "text-[#d5c5a8]" : "text-[#b7ada0]"}`}>
+        <span>{label}</span>
+        <span className={`font-mono tabular-nums ${highlight ? "font-semibold" : ""}`}>
+          {value} ms
+        </span>
+      </div>
+    ) : null;
+
+  return (
+    <div className="mt-4 rounded-xl border border-[#2d2d2d] bg-[#161616] px-4 py-3 text-xs">
+      <p className="mb-2 font-medium text-[#7a7068] uppercase tracking-wider">Latency · last turn</p>
+      <div className="space-y-1">
+        {row("STT (Sarvam)",            stats.stt_ms)}
+        {row("LLM → first sentence",    stats.llm_first_sentence_ms)}
+        {row("TTS sentence 0 (Cartesia)", stats.first_tts_ms)}
+        {row("→ first audio heard",     stats.time_to_first_audio_ms, true)}
+        {row("Total turn",              stats.total_ms, true)}
+      </div>
+      {stats.sentence_tts_ms.length > 1 && (
+        <p className="mt-2 text-[#4c4640]">
+          TTS/sentence: {stats.sentence_tts_ms.map((v, i) => `s${i}=${v}`).join(" · ")} ms
+        </p>
+      )}
+      <p className="mt-1 text-[#4c4640]">
+        Audio: {(stats.audio_bytes / 1024).toFixed(1)} KB
+      </p>
+    </div>
+  );
+}
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
 export default function VoiceAgentPage() {
-  const token = useAuthStore((state) => state.accessToken);
+  const token = useAuthStore((s) => s.accessToken);
   const { subjects: subjectList, loaded: subjectsLoaded } = useSubjectList();
 
-  const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const [messages, setMessages] = useState<VoiceMessage[]>([]);
   const [subject, setSubject] = useState("Anatomy");
-  const [autoSpeak, setAutoSpeak] = useState(true);
-  const [sessionId, setSessionId] = useState<string>(() => generateSessionId());
-  const [providerError, setProviderError] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState(generateSessionId);
 
   const bottomRef = useRef<HTMLDivElement>(null);
-  // Keep a ref to messages so handleSendTranscript always sees current history
-  // without the stale-closure bug that useCallback + deps creates
-  const messagesRef = useRef<VoiceMessage[]>(messages);
-  useEffect(() => { messagesRef.current = messages; }, [messages]);
-
-  const stt = useSarvamSTT(token ?? "");
-  const tts = useCartesiaTTS();
 
   // Sync subject list
   useEffect(() => {
-    if (!subjectsLoaded || subjectList.length === 0) return;
+    if (!subjectsLoaded || !subjectList.length) return;
     if (!subjectList.includes(subject)) setSubject(subjectList[0]);
   }, [subjectsLoaded, subjectList, subject]);
 
-  // Scroll to bottom on new message
+  // Scroll to latest message
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Health check on mount — warn if any provider key is missing
-  useEffect(() => {
-    if (!token) return;
-    checkVoiceHealth(token).then((h) => {
-      const missing: string[] = [];
-      if (!h.sarvam) missing.push("Sarvam (STT)");
-      if (!h.groq) missing.push("Groq (LLM)");
-      if (!h.cartesia) missing.push("Cartesia (TTS)");
-      if (missing.length > 0) {
-        setProviderError(`Voice service unavailable: ${missing.join(", ")} key not configured.`);
-      }
-    }).catch(() => {
-      // Health check failure is non-fatal — don't block the UI
+  const handleNewMessage = useCallback((msg: VoiceMessage) => {
+    setMessages((prev) => [...prev, msg]);
+  }, []);
+
+  const { state, isReady, error, audioLevel, partialTranscript, liveCaption, latency, startSession, stopSession, resetHistory } =
+    useVoiceSession({
+      authToken: token ?? "",
+      subject,
+      sessionId,
+      onMessage: handleNewMessage,
+      onSessionId: setSessionId,
     });
-  }, [token]);
 
-  // Sync TTS speaking state → voiceState
+  const isActive = state !== "inactive";
+  const isBusy = state === "loading";
+
+  // Keep the latest streaming text in view
   useEffect(() => {
-    if (tts.isSpeaking) {
-      setVoiceState("speaking");
-      return;
+    if (liveCaption || partialTranscript) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [liveCaption, partialTranscript]);
+
+  const handleToggle = useCallback(() => {
+    if (isActive) {
+      stopSession();
+    } else {
+      void startSession();
     }
-    if (voiceState === "speaking") {
-      setVoiceState("idle");
-    }
-  }, [tts.isSpeaking, voiceState]);
+  }, [isActive, startSession, stopSession]);
 
-  const handleSendTranscript = useCallback(
-    async (text: string) => {
-      if (!text.trim() || !token) return;
+  const handleNewConversation = useCallback(() => {
+    stopSession();
+    setMessages([]);
+    setSessionId(generateSessionId());
+    resetHistory();
+  }, [stopSession, resetHistory]);
 
-      const normalized = text.trim();
-      const userMessage: VoiceMessage = {
-        role: "user",
-        content: normalized,
-        timestamp: new Date().toISOString(),
-      };
+  // ─── Derived UI helpers ─────────────────────────────────────────────────
 
-      // Use ref so we always send the real current history, not a stale snapshot
-      const currentHistory = messagesRef.current;
-      setMessages((prev) => [...prev, userMessage]);
-      setVoiceState("thinking");
-
-      try {
-        const result = await askVoiceQuestion(token, normalized, currentHistory, subject, sessionId);
-
-        // Keep server-assigned session ID for this conversation thread
-        if (result.sessionId && result.sessionId !== sessionId) {
-          setSessionId(result.sessionId);
-        }
-
-        const assistantMessage: VoiceMessage = {
-          role: "assistant",
-          content: result.textResponse,
-          timestamp: new Date().toISOString(),
-        };
-        setMessages((prev) => [...prev, assistantMessage]);
-
-        if (autoSpeak) {
-          setVoiceState("speaking");
-          await tts.speak(result.textResponse, token);
-          setVoiceState("idle");
-        } else {
-          setVoiceState("idle");
-        }
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Something went wrong. Please try again.";
-        setProviderError(msg);
-        setVoiceState("idle");
-      }
-    },
-    [autoSpeak, sessionId, subject, token, tts],
-  );
-
-  const handleMicClick = useCallback(async () => {
-    if (!token) return;
-
-    if (voiceState === "listening") {
-      // Stop recording → transcribe → send
-      setVoiceState("thinking");
-      const finalText = await stt.stopListening();
-      if (finalText) {
-        await handleSendTranscript(finalText);
-      } else {
-        setVoiceState("idle");
-      }
-      return;
-    }
-
-    if (voiceState === "speaking") {
-      tts.stop();
-      setVoiceState("idle");
-      return;
-    }
-
-    if (voiceState === "idle") {
-      setProviderError(null);
-      setVoiceState("listening");
-      await stt.startListening();
-      // If startListening failed (e.g. mic denied), stt.error is set
-      if (stt.error) setVoiceState("idle");
-    }
-  }, [token, voiceState, stt, tts, handleSendTranscript]);
-
-  // Cleanup on unmount
-  useEffect(() => () => { stt.cancel(); tts.stop(); }, [stt, tts]);
-
-  // ---------- Derived UI state ----------
-  const getMicIcon = () => {
-    if (voiceState === "listening") return <MicOff size={32} strokeWidth={1.5} />;
-    if (voiceState === "speaking") return <Square size={32} strokeWidth={1.5} />;
-    return <Mic size={32} strokeWidth={1.5} />;
+  const buttonIcon = () => {
+    if (state === "loading") return <Loader2 size={28} strokeWidth={1.5} className="animate-spin" />;
+    if (state === "inactive") return <Mic size={30} strokeWidth={1.5} />;
+    if (state === "listening") return <Radio size={28} strokeWidth={1.5} className="animate-pulse" />;
+    if (state === "recording") return <Mic size={28} strokeWidth={1.5} />;
+    if (state === "processing") return <Brain size={28} strokeWidth={1.5} className="animate-spin" style={{ animationDuration: "2s" }} />;
+    if (state === "speaking") return <Volume2 size={28} strokeWidth={1.5} />;
+    return <Mic size={30} strokeWidth={1.5} />;
   };
 
-  const getMicStyle = () => {
-    if (voiceState === "listening") return "border-red-400 bg-red-400/10 text-red-400";
-    if (voiceState === "speaking") return "border-[#d5c5a8] bg-[#d5c5a8]/10 text-[#d5c5a8]";
-    return "border-[#353534] bg-[#1f1f1f] text-[#e5e2e1] hover:border-[#d5c5a8]/60";
-  };
-
-  const getMicAnimation = () => {
-    if (voiceState === "listening") return "scale-110 ring-2 ring-red-400/30 ring-offset-2 ring-offset-[#1f1f1f]";
-    return "hover:scale-105";
+  const buttonStyle = () => {
+    if (!isActive)
+      return "border-[#4c463d] bg-[#1f1f1f] text-[#e5e2e1] hover:border-[#d5c5a8]/60 hover:bg-[#d5c5a8]/5 hover:scale-105";
+    if (state === "loading")
+      return "border-[#d5c5a8]/30 bg-[#1f1f1f] text-[#d5c5a8]/50";
+    if (state === "listening")
+      return "border-[#d5c5a8]/50 bg-[#d5c5a8]/8 text-[#d5c5a8] ring-4 ring-[#d5c5a8]/10";
+    if (state === "recording")
+      return "border-red-400 bg-red-400/10 text-red-400 scale-110 ring-4 ring-red-400/20";
+    if (state === "processing")
+      return "border-[#d5c5a8]/40 bg-[#1f1f1f] text-[#d5c5a8]/60";
+    if (state === "speaking")
+      return "border-[#d5c5a8] bg-[#d5c5a8]/10 text-[#d5c5a8] ring-4 ring-[#d5c5a8]/15";
+    return "border-[#4c463d] bg-[#1f1f1f] text-[#e5e2e1]";
   };
 
   const statusText = () => {
-    if (voiceState === "listening") return <span className="text-red-400">Listening — tap again to send</span>;
-    if (voiceState === "thinking" && stt.isTranscribing) return <span className="text-[#d5c5a8]/70">Transcribing...</span>;
-    if (voiceState === "thinking") return <span className="text-[#d5c5a8]/70">Dr. Almond is thinking...</span>;
-    if (voiceState === "speaking") return <span className="text-[#d5c5a8]">Speaking — tap to stop</span>;
-    return <span>Tap the microphone to ask a question</span>;
+    if (!token) return "Sign in to use Dr. Almond";
+    if (state === "loading") return "Starting microphone…";
+    if (state === "inactive" && !isReady) return "Connecting…";
+    if (state === "inactive") return "Ready — tap to start";
+    if (state === "listening") return "Listening… just start speaking";
+    if (state === "recording") return "Listening to you…";
+    if (state === "processing") return "Dr. Almond is thinking…";
+    if (state === "speaking") return "Speaking — talk over me to interrupt";
+    return "";
   };
-
-  const isMicDisabled = !token || voiceState === "thinking" || !!providerError;
 
   return (
     <div className="aa-anim-fade-up flex h-[calc(100dvh-5.5rem)] flex-col overflow-hidden rounded-[var(--aa-r-xl)] border border-[var(--aa-border)] bg-[var(--aa-bg)]">
 
-      {/* Header */}
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between border-b border-[#353534] px-6 py-4">
         <div className="flex items-center gap-3">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#d5c5a8]/10">
@@ -220,11 +204,12 @@ export default function VoiceAgentPage() {
           </div>
           <div>
             <h1 className="text-sm font-semibold text-[#fff2de]">Dr. Almond</h1>
-            <p className="text-xs text-[#b7ada0]">Your Medical Mentor</p>
+            <p className="text-xs text-[#b7ada0]">Medical Mentor · Voice Mode</p>
           </div>
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Subject selector */}
           <div className="relative">
             <select
               value={subject}
@@ -235,78 +220,105 @@ export default function VoiceAgentPage() {
                 <option key={s} value={s}>{s}</option>
               ))}
             </select>
-            <ChevronDown size={12} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[#cec5b9]" />
+            <ChevronDown
+              size={12}
+              className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[#cec5b9]"
+            />
           </div>
 
-          <button
-            onClick={() => setAutoSpeak((p) => !p)}
-            className={`aa-press flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs transition-all ${
-              autoSpeak ? "border-[#d5c5a8]/40 text-[#d5c5a8]" : "border-[#353534] text-[#cec5b9]"
-            }`}
-          >
-            {autoSpeak ? <Volume2 size={12} strokeWidth={1.9} /> : <VolumeX size={12} strokeWidth={1.9} />}
-            {autoSpeak ? "Sound on" : "Sound off"}
-          </button>
+          {/* Headphones hint — improves barge-in / prevents echo on speakers */}
+          <div className="hidden items-center gap-1.5 rounded-lg border border-[#353534] px-2.5 py-1.5 text-xs text-[#b7ada0] sm:flex">
+            <Headphones size={12} strokeWidth={1.9} />
+            Headphones recommended
+          </div>
         </div>
       </div>
 
-      {/* Provider error banner */}
-      {providerError ? (
+      {/* ── Error banner ───────────────────────────────────────────────────── */}
+      {error ? (
         <div className="flex items-center gap-2 border-b border-red-900/40 bg-red-900/10 px-6 py-2.5 text-xs text-red-400">
-          <AlertCircle size={13} strokeWidth={2} />
-          {providerError}
+          <AlertCircle size={13} strokeWidth={2} className="shrink-0" />
+          <span>{error}</span>
         </div>
       ) : null}
 
-      {/* Conversation */}
+      {/* ── Conversation ────────────────────────────────────────────────────── */}
       <div className="flex-1 space-y-5 overflow-y-auto px-6 py-6">
-        {messages.length === 0 ? (
+
+        {/* Empty state */}
+        {messages.length === 0 && state === "inactive" ? (
           <div className="flex h-full flex-col items-center justify-center text-center">
             <Brain size={56} strokeWidth={0.5} className="mb-5 select-none text-[#d5c5a8]/15" />
             <h2 className="mb-2 text-xl font-semibold text-[#fff2de]">Ask Dr. Almond anything</h2>
             <p className="max-w-xs text-sm text-[#cec5b9]">
-              Tap the mic and speak your question about {subject}. Dr. Almond answers like a brilliant senior doctor
-              sitting beside you — concise, clear, and human.
+              Tap the mic to activate voice mode. Just speak naturally — Dr. Almond listens and
+              responds like a brilliant senior doctor sitting beside you.
             </p>
             <div className="mt-6 flex flex-col items-start gap-2 rounded-xl border border-[#353534] bg-[#1a1a1a] px-5 py-4 text-left">
               <p className="text-xs font-medium text-[#b7ada0]">Try asking:</p>
               {[
-                `Explain the brachial plexus simply`,
-                `What's the most tested topic in ${subject}?`,
-                `I keep forgetting the cranial nerves. Help.`,
+                "Explain the brachial plexus simply",
+                `What's the most high-yield topic in ${subject}?`,
+                "I keep mixing up cranial nerves — help me remember",
               ].map((q) => (
-                <p key={q} className="text-xs text-[#7a7068]">"{q}"</p>
+                <p key={q} className="text-xs text-[#7a7068]">&ldquo;{q}&rdquo;</p>
               ))}
             </div>
           </div>
         ) : null}
 
-        {messages.map((message, index) => (
+        {/* Session active, no messages yet */}
+        {messages.length === 0 && state !== "inactive" ? (
+          <div className="flex h-full flex-col items-center justify-center">
+            <div className="flex flex-col items-center gap-3 text-center">
+              <Radio size={32} strokeWidth={1} className="text-[#d5c5a8]/30 animate-pulse" />
+              <p className="text-sm text-[#7a7068]">Session active — speak when ready</p>
+            </div>
+          </div>
+        ) : null}
+
+        {/* Messages */}
+        {messages.map((msg, i) => (
           <div
-            key={`${message.timestamp}-${index}`}
-            className={`aa-anim-fade-up flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
+            key={`${msg.timestamp}-${i}`}
+            className={`aa-anim-fade-up flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
           >
-            {message.role === "assistant" ? (
-              <div className="mr-3 mt-1 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded bg-[#d5c5a8]/10">
+            {msg.role === "assistant" ? (
+              <div className="mr-3 mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded bg-[#d5c5a8]/10">
                 <Brain size={14} className="text-[#d5c5a8]" strokeWidth={1.8} />
               </div>
             ) : null}
             <div
               className={`max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                message.role === "user"
+                msg.role === "user"
                   ? "rounded-br-sm border border-[#4c463d] bg-[#1f1f1f] text-[#e5e2e1]"
                   : "rounded-bl-sm border border-[#353534] bg-[#1a1a1a] text-[#e5e2e1]"
               }`}
             >
-              {message.content}
+              {msg.content}
             </div>
           </div>
         ))}
 
-        {/* Thinking indicator */}
-        {voiceState === "thinking" ? (
+        {/* Live streaming caption — assistant sentences as they arrive */}
+        {liveCaption ? (
+          <div className="aa-anim-fade-up flex justify-start">
+            <div className="mr-3 mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded bg-[#d5c5a8]/10">
+              <Brain size={14} className="text-[#d5c5a8]" strokeWidth={1.8} />
+            </div>
+            <div className="max-w-[78%] rounded-2xl rounded-bl-sm border border-[#d5c5a8]/25 bg-[#1a1a1a] px-4 py-3 text-sm leading-relaxed text-[#e5e2e1]">
+              {liveCaption}
+              {state === "speaking" ? (
+                <span className="ml-0.5 inline-block h-3.5 w-[2px] animate-pulse bg-[#d5c5a8] align-middle" />
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {/* Thinking indicator — only before the first sentence lands */}
+        {state === "processing" && !liveCaption ? (
           <div className="flex justify-start">
-            <div className="mr-3 mt-1 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded bg-[#d5c5a8]/10">
+            <div className="mr-3 mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded bg-[#d5c5a8]/10">
               <Brain size={14} className="text-[#d5c5a8]" strokeWidth={1.8} />
             </div>
             <div className="rounded-2xl rounded-bl-sm border border-[#353534] bg-[#1a1a1a] px-4 py-3">
@@ -326,47 +338,56 @@ export default function VoiceAgentPage() {
         <div ref={bottomRef} />
       </div>
 
-      {/* Controls */}
-      <div className="border-t border-[#353534] px-6 pb-6 pt-4">
+      {/* ── Controls ────────────────────────────────────────────────────────── */}
+      <div className="border-t border-[#353534] px-6 pb-6 pt-5">
+
+        {/* Status text */}
         <p className="mb-3 h-4 text-center text-xs text-[#b7ada0]">
           {statusText()}
         </p>
 
-        {/* Live audio waveform */}
-        {voiceState === "listening" ? (
-          <div className="mb-4">
-            <AudioWaveform level={stt.audioLevel} bars={7} />
-          </div>
-        ) : null}
-
-        {/* Microphone button */}
-        <div className="flex justify-center">
-          <button
-            onClick={() => { void handleMicClick(); }}
-            disabled={isMicDisabled}
-            className={`flex h-20 w-20 items-center justify-center rounded-full border-2 transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-40 ${getMicStyle()} ${getMicAnimation()}`}
-          >
-            {getMicIcon()}
-          </button>
+        {/* Waveform */}
+        <div className="mb-4">
+          <Waveform level={audioLevel} state={state} />
         </div>
 
-        {/* STT / TTS errors */}
-        {(stt.error && !providerError) ? (
-          <p className="mt-3 text-center text-xs text-red-400">{stt.error}</p>
-        ) : null}
-        {(tts.error && !providerError) ? (
-          <p className="mt-3 text-center text-xs text-red-400">{tts.error}</p>
+        {/* Toggle button — single click to activate / deactivate */}
+        <div className="flex justify-center">
+          <div className="relative">
+            <button
+              onClick={handleToggle}
+              disabled={!token || isBusy}
+              aria-label={isActive ? "Stop voice session" : "Start voice session"}
+              className={`flex h-20 w-20 items-center justify-center rounded-full border-2 transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-40 ${buttonStyle()}`}
+            >
+              {buttonIcon()}
+            </button>
+            {/* Green dot: WS pre-connected and session not yet active */}
+            {isReady && !isActive && (
+              <span
+                className="absolute bottom-1 right-1 h-2.5 w-2.5 rounded-full border-2 border-[#121212] bg-emerald-400"
+                title="Connection ready"
+              />
+            )}
+          </div>
+        </div>
+
+        {/* Session active indicator */}
+        {isActive ? (
+          <p className="mt-3 flex items-center justify-center gap-1.5 text-xs text-[#d5c5a8]/50">
+            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[#d5c5a8]/50" />
+            Voice session active · tap to end
+          </p>
         ) : null}
 
-        {/* Clear */}
+        {/* Latency panel — shown after each completed turn */}
+        {latency ? <LatencyPanel stats={latency} /> : null}
+
+        {/* New conversation */}
         {messages.length > 0 ? (
           <div className="mt-4 flex justify-center">
             <button
-              onClick={() => {
-                setMessages([]);
-                setSessionId(generateSessionId());
-                setProviderError(null);
-              }}
+              onClick={handleNewConversation}
               className="text-xs text-[#b7ada0] transition-colors hover:text-[#cec5b9]"
             >
               New conversation

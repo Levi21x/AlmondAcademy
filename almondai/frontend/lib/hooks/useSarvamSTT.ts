@@ -4,139 +4,117 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { transcribeAudio } from "@/lib/api/voice.api";
 
-interface UseSarvamSTTReturn {
+export interface StartListeningResult {
+  success: boolean;
+  error?: string;
+}
+
+export interface UseSarvamSTTReturn {
   isListening: boolean;
   isTranscribing: boolean;
-  audioLevel: number; // 0–1 amplitude for waveform UI
-  startListening: () => Promise<void>;
-  /** Stops recording, uploads to Sarvam via backend, resolves with transcript. */
+  startListening: () => Promise<StartListeningResult>;
   stopListening: () => Promise<string>;
   cancel: () => void;
   error: string | null;
   isSupported: boolean;
 }
 
-function pickMimeType(): string {
-  if (typeof MediaRecorder === "undefined") return "";
-  // Prefer opus for quality+size; mp4 as Safari fallback
-  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
-  return candidates.find((t) => MediaRecorder.isTypeSupported(t)) ?? "";
-}
-
 export function useSarvamSTT(authToken: string): UseSarvamSTTReturn {
   const [isListening, setIsListening] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
-  const [audioLevel, setAudioLevel] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const mimeTypeRef = useRef<string>("");
-
-  // Web Audio API for live amplitude
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const animFrameRef = useRef<number>(0);
+  // Keep authToken in a ref so stopListening always uses the latest value
+  const authTokenRef = useRef(authToken);
+  useEffect(() => { authTokenRef.current = authToken; }, [authToken]);
 
   const isSupported = useMemo(() => {
     if (typeof window === "undefined") return false;
     return Boolean(window.MediaRecorder && navigator?.mediaDevices?.getUserMedia);
   }, []);
 
-  const stopAudioAnalysis = useCallback(() => {
-    cancelAnimationFrame(animFrameRef.current);
-    analyserRef.current?.disconnect();
-    analyserRef.current = null;
-    try { audioContextRef.current?.close(); } catch { /* ignore */ }
-    audioContextRef.current = null;
-    setAudioLevel(0);
-  }, []);
-
-  const startAudioAnalysis = useCallback((stream: MediaStream) => {
-    try {
-      const ctx = new AudioContext();
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 256;
-      ctx.createMediaStreamSource(stream).connect(analyser);
-      audioContextRef.current = ctx;
-      analyserRef.current = analyser;
-
-      const data = new Uint8Array(analyser.frequencyBinCount);
-      const tick = () => {
-        analyser.getByteFrequencyData(data);
-        const avg = data.reduce((s, v) => s + v, 0) / data.length;
-        setAudioLevel(Math.min(avg / 128, 1)); // normalise to 0–1
-        animFrameRef.current = requestAnimationFrame(tick);
-      };
-      animFrameRef.current = requestAnimationFrame(tick);
-    } catch {
-      // AudioContext unavailable — waveform stays static
-    }
-  }, []);
-
   const releaseStream = useCallback(() => {
-    stopAudioAnalysis();
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
-  }, [stopAudioAnalysis]);
+  }, []);
 
-  const startListening = useCallback(async () => {
+  const startListening = useCallback(async (): Promise<StartListeningResult> => {
     if (!isSupported) {
-      setError("Voice input is not supported in this browser.");
-      return;
+      const msg = "Voice input is not supported in this browser.";
+      setError(msg);
+      return { success: false, error: msg };
     }
 
+    // Reset state for fresh recording
+    setError(null);
+    chunksRef.current = [];
+
+    let stream: MediaStream;
     try {
-      setError(null);
-      chunksRef.current = [];
+      // Absolute minimum constraints — no sampleRate, no channelCount.
+      // Extra constraints cause OverconstrainedError on many systems.
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err: unknown) {
+      const e = err instanceof Error ? err : new Error("Unknown error");
+      let msg: string;
+      if (e.name === "NotAllowedError" || e.name === "PermissionDeniedError") {
+        msg = "Microphone access denied. Enable it in your browser and try again.";
+      } else if (e.name === "NotFoundError" || e.name === "DevicesNotFoundError") {
+        msg = "No microphone found. Please connect one and try again.";
+      } else {
+        msg = `Microphone error: ${e.message}`;
+      }
+      setError(msg);
+      return { success: false, error: msg };
+    }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          sampleRate: 16000,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-      streamRef.current = stream;
+    streamRef.current = stream;
 
-      const mimeType = pickMimeType();
-      mimeTypeRef.current = mimeType;
+    // Pick the first supported MIME type; fall back to browser default
+    const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
+    const mimeType = candidates.find((t) => MediaRecorder.isTypeSupported(t)) ?? "";
+    mimeTypeRef.current = mimeType;
 
+    try {
       const recorder = mimeType
         ? new MediaRecorder(stream, { mimeType })
         : new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
 
       recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
+        if (e.data && e.data.size > 0) {
+          chunksRef.current.push(e.data);
+        }
       };
 
-      // 250ms timeslice: data arrives incrementally so we never lose a partial
-      // recording if the user's tab is backgrounded or the stop event is delayed
-      recorder.start(250);
-      startAudioAnalysis(stream);
+      recorder.onerror = () => {
+        setError("Recording error. Please try again.");
+        setIsListening(false);
+        releaseStream();
+      };
+
+      // No timeslice — data is delivered in one chunk on stop().
+      // This is simpler and avoids edge cases with partial chunks.
+      recorder.start();
       setIsListening(true);
+      return { success: true };
     } catch (err: unknown) {
-      const e = err instanceof Error ? err : new Error("Unknown error");
-      if (e.name === "NotAllowedError" || e.name === "PermissionDeniedError") {
-        setError("Microphone permission denied. Please allow microphone access and try again.");
-      } else if (e.name === "NotFoundError") {
-        setError("No microphone found. Please connect one and try again.");
-      } else {
-        setError(e.message || "Could not access microphone.");
-      }
+      const msg = err instanceof Error ? err.message : "Failed to start recording.";
+      setError(msg);
       releaseStream();
-      setIsListening(false);
+      return { success: false, error: msg };
     }
-  }, [isSupported, releaseStream, startAudioAnalysis]);
+  }, [isSupported, releaseStream]);
 
   const stopListening = useCallback((): Promise<string> => {
     const recorder = mediaRecorderRef.current;
+
     if (!recorder || recorder.state === "inactive") {
       releaseStream();
       setIsListening(false);
@@ -149,33 +127,40 @@ export function useSarvamSTT(authToken: string): UseSarvamSTTReturn {
         setIsListening(false);
         mediaRecorderRef.current = null;
 
-        const mimeType = mimeTypeRef.current || recorder.mimeType || "audio/webm";
-        const blob = new Blob(chunksRef.current, { type: mimeType });
+        // Build blob from accumulated chunks
+        const type = mimeTypeRef.current || recorder.mimeType || "audio/webm";
+        const blob = new Blob(chunksRef.current, { type });
         chunksRef.current = [];
 
-        if (blob.size < 1000) {
-          // Blob under ~1KB means practically no audio was captured
+        if (blob.size < 100) {
+          setError("Nothing recorded. Hold the mic button while speaking.");
           resolve("");
           return;
         }
 
-        if (!authToken) {
+        const token = authTokenRef.current;
+        if (!token) {
           resolve("");
           return;
         }
 
         try {
           setIsTranscribing(true);
-          const transcript = await transcribeAudio(authToken, blob);
+          const transcript = await transcribeAudio(token, blob);
           resolve(transcript.trim());
         } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : "Transcription failed. Please try again.";
+          const msg = err instanceof Error ? err.message : "Transcription failed.";
           setError(msg);
           resolve("");
         } finally {
           setIsTranscribing(false);
         }
       };
+
+      // request any buffered data before stopping
+      try {
+        recorder.requestData();
+      } catch { /* not all browsers support this — safe to ignore */ }
 
       try {
         recorder.stop();
@@ -185,12 +170,12 @@ export function useSarvamSTT(authToken: string): UseSarvamSTTReturn {
         resolve("");
       }
     });
-  }, [authToken, releaseStream]);
+  }, [releaseStream]);
 
   const cancel = useCallback(() => {
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== "inactive") {
-      recorder.onstop = null; // prevent transcription on cancel
+      recorder.onstop = null; // skip transcription
       try { recorder.stop(); } catch { /* ignore */ }
     }
     chunksRef.current = [];
@@ -202,14 +187,5 @@ export function useSarvamSTT(authToken: string): UseSarvamSTTReturn {
 
   useEffect(() => () => { cancel(); }, [cancel]);
 
-  return {
-    isListening,
-    isTranscribing,
-    audioLevel,
-    startListening,
-    stopListening,
-    cancel,
-    error,
-    isSupported,
-  };
+  return { isListening, isTranscribing, startListening, stopListening, cancel, error, isSupported };
 }

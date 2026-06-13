@@ -150,6 +150,69 @@ class GroqLLMClient:
 
         return "AlmondAI could not process your request right now due to a temporary network issue."
 
+    async def stream_with_messages(
+        self,
+        messages: list[dict],
+        max_tokens: int = 220,
+        model: str | None = None,
+    ) -> AsyncGenerator[str, None]:
+        """Streaming variant of ``generate_with_messages`` — yields token deltas.
+
+        Used by the voice WebSocket so the LLM response can be chunked into
+        sentences and sent to TTS as it is produced (instead of waiting for the
+        full completion).
+        """
+        lc_messages = []
+        for item in messages:
+            role = str(item.get("role", "")).strip().lower()
+            content = str(item.get("content", "")).strip()
+            if not content:
+                continue
+            if role == "system":
+                lc_messages.append(SystemMessage(content=content))
+            elif role == "assistant":
+                lc_messages.append(AIMessage(content=content))
+            else:
+                lc_messages.append(HumanMessage(content=content))
+
+        tried_fallback = False
+        active_model = model or self.model
+        for attempt in range(2):
+            try:
+                client = ChatGroq(
+                    api_key=self.api_key,
+                    model=active_model,
+                    max_tokens=max_tokens,
+                    temperature=self.temperature,
+                    streaming=True,
+                )
+                async for chunk in client.astream(lc_messages):
+                    content = getattr(chunk, "content", "")
+                    if content:
+                        yield str(content)
+                return
+            except Exception as exc:
+                msg = str(exc).lower()
+                if self._is_invalid_key_error(exc):
+                    logger.exception("Groq authentication failed")
+                    raise ValueError("Invalid GROQ_API_KEY. Please update backend/.env") from exc
+
+                if ("decommission" in msg or "decommissioned" in msg or "not available" in msg or "model not found" in msg) and not tried_fallback:
+                    active_model = self.fallback_model
+                    tried_fallback = True
+                    continue
+
+                if self._is_rate_limit_error(exc):
+                    yield RATE_LIMIT_MESSAGE
+                    return
+
+                if self._is_network_error(exc) and attempt == 0:
+                    await asyncio.sleep(0.5)
+                    continue
+
+                yield "AlmondAI could not process your request right now due to a temporary network issue."
+                return
+
     async def generate_sync(self, prompt: str, system_prompt: str, max_tokens: int = 1500) -> str:
         messages = [SystemMessage(content=system_prompt), HumanMessage(content=prompt)]
         tried_fallback = False

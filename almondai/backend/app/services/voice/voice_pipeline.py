@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
+from typing import Any, AsyncGenerator
 
 import httpx
 
@@ -13,30 +13,38 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Medical Mentor system prompt
 # ---------------------------------------------------------------------------
-VOICE_SYSTEM_PROMPT = """You are Dr. Almond, a brilliant, warm senior doctor mentoring an MBBS student in a spoken conversation.
+VOICE_SYSTEM_PROMPT = """You are Dr. Almond, a brilliant, warm senior doctor mentoring an MBBS student in a live spoken conversation.
 
-You speak exactly like a real doctor teaching at the bedside — natural, human, conversational.
+You speak exactly like a real doctor teaching at the bedside — natural, human, conversational. This is VOICE, not text. The student is listening, not reading.
 
-RESPONSE RULES:
-- 40 to 120 words maximum per response (15 to 45 seconds when spoken)
-- Give a clear answer first, then one supporting detail or analogy
-- End with a short follow-up question ONLY if it helps deepen understanding
-- Never give a lecture — one clear point at a time
-- Use everyday analogies before medical terminology
-- Speak in warm, direct second person ("Think of it this way...", "Here's the key thing...")
+DEFAULT BEHAVIOR (almost every answer):
+- Answer in 2 to 4 short spoken sentences. Quick, direct, conversational.
+- Lead with the answer in the first sentence. No throat-clearing.
+- One idea at a time. Add a single analogy or memory hook when it genuinely helps.
+- Sound like a mentor talking, never like a textbook being read aloud.
 
-STRICT FORMAT RULES:
-- Plain spoken English only — zero markdown, zero bullet points, zero special characters
-- No numbered lists, no asterisks, no headers
-- No "Certainly", "Of course", "Great question", "Sure" openers
-- Transitions: "So", "Now", "The key thing is", "Think of it this way", "What happens next is"
+ADAPTIVE DEPTH (read the student's intent):
+- Quick factual question ("what is", "define", "which") -> one or two sentences, then stop.
+- Conceptual question ("why", "how", "explain") -> 3 to 5 sentences building the intuition.
+- They explicitly ask to "go deeper", "in detail", "everything about" -> give a fuller explanation, still spoken and structured.
+- They mention an exam, NEET-PG, or "high yield" -> lead with what matters for the exam and the classic trap.
+- They sound confused or say "I don't get it" -> drop to the simplest possible analogy and rebuild from zero.
+
+CONVERSATIONAL RULES:
+- End with a brief check-in or follow-up question ONLY when it deepens learning ("Want me to walk through the pathway?"). Not every turn.
+- It is fine to be encouraging and brief: "Exactly right." "Close, but here's the catch."
+- Never give a long lecture unprompted. If the topic is huge, give the headline and offer to go deeper.
+
+STRICT SPOKEN-FORMAT RULES (this text goes straight to text-to-speech):
+- Plain spoken English only. Zero markdown, zero bullet points, zero asterisks, zero headers, zero numbered lists.
+- Write numbers and units the way you'd say them out loud.
+- No "Certainly", "Of course", "Great question", "Sure" openers.
+- Natural transitions only: "So", "Now", "Here's the key thing", "Think of it this way", "What happens next is".
 
 TEACHING STYLE:
-- Analogy first, then the correct term
-- Confirm understanding before moving on
-- When a student seems confused, simplify one more level
-- Treat every question as valid and important
-"""
+- Analogy first, then the precise medical term.
+- Treat every question as valid and important.
+- When the student is right, confirm it warmly and add one sharpening detail."""
 
 CATEGORY_ADDONS: dict[str, str] = {
     "survivor": " Focus on what's high-yield for exams. Be brief and direct.",
@@ -46,6 +54,58 @@ CATEGORY_ADDONS: dict[str, str] = {
     "strategic_climber": " Highlight NEET-PG relevance and pattern recognition tips.",
     "sprinter": "",
 }
+
+
+# Abbreviations whose trailing period must NOT be treated as a sentence end.
+_ABBREVIATIONS = {
+    "dr", "mr", "mrs", "ms", "prof", "vs", "etc", "eg", "ie", "approx",
+    "fig", "no", "inc", "ltd", "st", "i.e", "e.g", "a.k.a",
+}
+
+# A sentence ends at . ! ? : possibly wrapped in quotes/brackets, followed by
+# whitespace (or end of string handled by the caller).
+_SENTENCE_END = re.compile(r'([.!?]+)([")\]]*)(\s+)')
+
+
+def _split_first_sentence(buffer: str) -> tuple[str | None, str]:
+    """Pop the first complete sentence from ``buffer``.
+
+    Returns ``(sentence, remainder)`` if a sentence boundary is found,
+    otherwise ``(None, buffer)``. Guards against abbreviations and decimals
+    (e.g. "3.5", "Dr. Almond") so TTS isn't cut mid-phrase.
+    """
+    for match in _SENTENCE_END.finditer(buffer):
+        end = match.end()
+        candidate = buffer[:end]
+
+        # Reject if the period belongs to a decimal number ("3.5")
+        before = buffer[: match.start(1)]
+        after = buffer[match.end() :]
+        if before[-1:].isdigit() and after[:1].isdigit():
+            continue
+
+        # Reject if the token before the period is a known abbreviation
+        last_word = re.split(r"[\s(]", before.strip())[-1].lower().rstrip(".")
+        if last_word in _ABBREVIATIONS:
+            continue
+
+        # Require a reasonable minimum so we don't synthesize "Yes." alone
+        # unless it's genuinely the whole thing — small fragments get merged
+        # by the caller's buffering anyway.
+        if len(candidate.strip()) < 2:
+            continue
+
+        return candidate.strip(), buffer[end:]
+
+    return None, buffer
+
+
+def _clean_sentence(text: str) -> str:
+    """Strip markdown/formatting from a single sentence for TTS."""
+    cleaned = (text or "").replace("*", "").replace("#", "").replace("_", "").replace("`", "")
+    cleaned = re.sub(r"\[(.*?)\]\(.*?\)", r"\1", cleaned)   # keep link text, drop URL
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
 
 
 def _normalize_spoken_response(text: str) -> str:
@@ -153,17 +213,16 @@ class VoicePipeline:
     # LLM — Groq
     # ------------------------------------------------------------------
 
-    async def get_ai_response(
+    def _build_messages(
         self,
         transcript: str,
         conversation_history: list[dict[str, Any]],
-        subject: str | None = None,
-        student_category: str = "sprinter",
-    ) -> str:
-        settings = get_settings()
+        subject: str | None,
+        student_category: str,
+    ) -> list[dict[str, str]]:
         system = VOICE_SYSTEM_PROMPT + CATEGORY_ADDONS.get(student_category, "")
         if subject:
-            system += f" The student is currently studying {subject}."
+            system += f"\n\nThe student is currently studying {subject}."
 
         # Keep last 8 turns (4 exchanges) for context without ballooning tokens
         safe_history: list[dict[str, str]] = []
@@ -173,18 +232,64 @@ class VoicePipeline:
             if role in {"user", "assistant"} and content:
                 safe_history.append({"role": role, "content": content})
 
-        messages = [
+        return [
             {"role": "system", "content": system},
             *safe_history,
             {"role": "user", "content": transcript.strip()},
         ]
 
+    async def get_ai_response(
+        self,
+        transcript: str,
+        conversation_history: list[dict[str, Any]],
+        subject: str | None = None,
+        student_category: str = "sprinter",
+    ) -> str:
+        settings = get_settings()
+        messages = self._build_messages(transcript, conversation_history, subject, student_category)
         raw = await self.llm.generate_with_messages(
             messages=messages,
-            max_tokens=200,
+            max_tokens=220,
             model=settings.groq_voice_model,
         )
         return _normalize_spoken_response(raw)
+
+    async def stream_spoken_sentences(
+        self,
+        transcript: str,
+        conversation_history: list[dict[str, Any]],
+        subject: str | None = None,
+        student_category: str = "sprinter",
+    ) -> AsyncGenerator[str, None]:
+        """Stream the LLM response and yield complete, TTS-ready sentences.
+
+        Tokens are accumulated from Groq's stream and flushed as soon as a
+        sentence boundary is reached, so the first sentence can be synthesized
+        and played while the rest of the answer is still being generated.
+        """
+        settings = get_settings()
+        messages = self._build_messages(transcript, conversation_history, subject, student_category)
+
+        buffer = ""
+        async for delta in self.llm.stream_with_messages(
+            messages=messages,
+            max_tokens=220,
+            model=settings.groq_voice_model,
+        ):
+            buffer += delta
+            # Emit every complete sentence currently sitting in the buffer
+            while True:
+                sentence, buffer = _split_first_sentence(buffer)
+                if sentence is None:
+                    break
+                cleaned = _clean_sentence(sentence)
+                if cleaned:
+                    yield cleaned
+
+        # Flush whatever remains after the stream ends
+        tail = _clean_sentence(buffer)
+        if tail:
+            yield tail
 
     # ------------------------------------------------------------------
     # TTS — Cartesia

@@ -19,6 +19,57 @@ def _unauthorized(message: str, code: str, details: dict | None = None) -> HTTPE
     )
 
 
+def verify_access_token(token: str) -> Dict[str, str]:
+    """Validate a Supabase access token and return ``{user_id, email}``.
+
+    Shared by the HTTP ``require_auth`` dependency and the voice WebSocket
+    (which receives the token as a query param, since browsers cannot set
+    Authorization headers on WebSocket handshakes).
+    """
+    token = (token or "").strip()
+    if not token:
+        raise _unauthorized("Missing authentication token", "INVALID_AUTH_HEADER")
+
+    settings = get_settings()
+    header = jwt.get_unverified_header(token)
+    algorithm = header.get("alg")
+    claims: dict
+
+    if algorithm in {"HS256", "HS384", "HS512"}:
+        try:
+            claims = jwt.decode(
+                token,
+                settings.supabase_jwt_secret,
+                algorithms=[algorithm],
+                options={"verify_aud": False},
+            )
+        except JWTError as exc:
+            raise _unauthorized("Invalid authentication token", "INVALID_TOKEN", {"reason": str(exc)}) from exc
+    else:
+        try:
+            client = get_supabase_admin_client()
+            auth_user = client.auth.get_user(token).user
+        except Exception as exc:
+            raise _unauthorized("Invalid authentication token", "INVALID_TOKEN", {"reason": str(exc)}) from exc
+
+        if auth_user is None or not auth_user.id or not auth_user.email:
+            raise _unauthorized("Token missing required claims", "INVALID_TOKEN_PAYLOAD")
+
+        claims = {"sub": str(auth_user.id), "email": str(auth_user.email)}
+
+    user_id = claims.get("sub")
+    email = claims.get("email")
+    if not user_id or not email:
+        raise _unauthorized("Token missing required claims", "INVALID_TOKEN_PAYLOAD")
+
+    user = {"user_id": str(user_id), "email": str(email)}
+
+    if not user.get("user_id") or not user.get("email"):
+        raise _unauthorized("Invalid authentication token", "INVALID_TOKEN")
+
+    return user
+
+
 def require_auth(request: Request) -> Dict[str, str]:
     try:
         authorization = request.headers.get("Authorization")
@@ -26,47 +77,7 @@ def require_auth(request: Request) -> Dict[str, str]:
             raise _unauthorized("Missing or invalid Authorization header", "INVALID_AUTH_HEADER")
 
         token = authorization.split(" ", 1)[1].strip()
-        if not token:
-            raise _unauthorized("Missing authentication token", "INVALID_AUTH_HEADER")
-
-        settings = get_settings()
-        header = jwt.get_unverified_header(token)
-        algorithm = header.get("alg")
-        claims: dict
-
-        if algorithm in {"HS256", "HS384", "HS512"}:
-            try:
-                claims = jwt.decode(
-                    token,
-                    settings.supabase_jwt_secret,
-                    algorithms=[algorithm],
-                    options={"verify_aud": False},
-                )
-            except JWTError as exc:
-                raise _unauthorized("Invalid authentication token", "INVALID_TOKEN", {"reason": str(exc)}) from exc
-        else:
-            try:
-                client = get_supabase_admin_client()
-                auth_user = client.auth.get_user(token).user
-            except Exception as exc:
-                raise _unauthorized("Invalid authentication token", "INVALID_TOKEN", {"reason": str(exc)}) from exc
-
-            if auth_user is None or not auth_user.id or not auth_user.email:
-                raise _unauthorized("Token missing required claims", "INVALID_TOKEN_PAYLOAD")
-
-            claims = {"sub": str(auth_user.id), "email": str(auth_user.email)}
-
-        user_id = claims.get("sub")
-        email = claims.get("email")
-        if not user_id or not email:
-            raise _unauthorized("Token missing required claims", "INVALID_TOKEN_PAYLOAD")
-
-        user = {"user_id": str(user_id), "email": str(email)}
-
-        if not user.get("user_id") or not user.get("email"):
-            raise _unauthorized("Invalid authentication token", "INVALID_TOKEN")
-
-        return user
+        return verify_access_token(token)
     except HTTPException:
         raise
     except Exception as exc:
