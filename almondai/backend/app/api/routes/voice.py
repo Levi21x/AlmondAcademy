@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+import base64
+import json
 import uuid
 from datetime import datetime, timezone
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
-from app.middleware.auth_middleware import require_auth
+from app.middleware.auth_middleware import require_auth, verify_access_token
 from app.services.achievements_service import achievements_service
 from app.services.auth_service import AuthService
 from app.services.streak_service import StreakService
@@ -191,3 +194,205 @@ async def speak_text(payload: dict, user=Depends(require_auth)) -> Response:
     except Exception as exc:
         logger.exception("TTS failed")
         raise HTTPException(status_code=500, detail={"error": True, "message": str(exc)}) from exc
+
+
+# ---------------------------------------------------------------------------
+# Streaming WebSocket — real-time turn pipeline
+#
+#   client                                   server
+#   ------                                   ------
+#   {type:"config", subject, session_id,
+#          history:[{role,content}...] }  -->
+#   <binary audio frames (one utterance)> -->
+#   {type:"audio_end"}                    -->
+#                                         <--  {type:"transcript", text}
+#                                         <--  {type:"sentence", index, text}
+#                                         <--  {type:"audio", index, mime, data(b64)}
+#                                              ... (repeats per sentence) ...
+#                                         <--  {type:"done", session_id, full_text}
+#   {type:"cancel"}  (barge-in)           -->  (server stops sending further audio)
+# ---------------------------------------------------------------------------
+
+def _log_voice_turn(user_id: str, subject: Optional[str], session_id: str, transcript_len: int) -> None:
+    """Best-effort streak + achievement logging. Never blocks the audio path."""
+    try:
+        streak_service.log_activity(
+            user_id=user_id,
+            activity_type="question_asked",
+            subject=subject,
+            session_id=session_id,
+            metadata={"source": "voice", "transcript_length": transcript_len},
+        )
+    except Exception:
+        logger.exception("Voice activity logging failed (non-fatal)")
+    try:
+        achievements_service.evaluate_and_unlock(
+            user_id=user_id,
+            trigger="voice_used",
+            context={"source": "voice", "event_hour_utc": datetime.now(timezone.utc).hour},
+        )
+    except Exception:
+        logger.exception("Voice achievement evaluation failed (non-fatal)")
+
+
+@router.websocket("/ws")
+async def voice_stream(websocket: WebSocket) -> None:
+    await websocket.accept()
+
+    # ---- Auth: token comes as a query param (WS can't set Authorization) ----
+    token = websocket.query_params.get("token", "")
+    try:
+        user = verify_access_token(token)
+    except Exception:
+        await websocket.send_json({"type": "error", "message": "Authentication failed"})
+        await websocket.close(code=1008)
+        return
+
+    pipeline = get_pipeline()
+    auth_service = AuthService()
+    try:
+        profile = auth_service.get_profile(user["user_id"])
+        student_category = profile.get("student_category", "sprinter") if profile else "sprinter"
+    except Exception:
+        student_category = "sprinter"
+
+    cancel_event = asyncio.Event()
+    current_task: asyncio.Task | None = None
+    audio_buf = bytearray()
+    cfg: Dict[str, Any] = {"subject": None, "session_id": str(uuid.uuid4()), "history": [], "mime": "audio/wav"}
+
+    async def process_turn(audio_bytes: bytes, conf: Dict[str, Any]) -> None:
+        session_id = conf.get("session_id") or str(uuid.uuid4())
+        try:
+            if cancel_event.is_set():
+                return
+
+            transcript = await pipeline.speech_to_text(
+                audio_bytes=audio_bytes,
+                filename="utterance.wav",
+                content_type=conf.get("mime") or "audio/wav",
+            )
+            transcript = (transcript or "").strip()
+            await websocket.send_json({"type": "transcript", "text": transcript, "session_id": session_id})
+
+            if not transcript or cancel_event.is_set():
+                await websocket.send_json({"type": "done", "session_id": session_id, "full_text": ""})
+                return
+
+            full: List[str] = []
+            idx = 0
+            async for sentence in pipeline.stream_spoken_sentences(
+                transcript=transcript,
+                conversation_history=conf.get("history") or [],
+                subject=conf.get("subject"),
+                student_category=student_category,
+            ):
+                if cancel_event.is_set():
+                    break
+                full.append(sentence)
+                await websocket.send_json({"type": "sentence", "index": idx, "text": sentence})
+
+                try:
+                    audio = await pipeline.text_to_speech(sentence)
+                except Exception:
+                    logger.exception("Sentence TTS failed; skipping audio for sentence %d", idx)
+                    audio = b""
+
+                if cancel_event.is_set():
+                    break
+                if audio:
+                    await websocket.send_json({
+                        "type": "audio",
+                        "index": idx,
+                        "mime": "audio/mpeg",
+                        "data": base64.b64encode(audio).decode("ascii"),
+                    })
+                idx += 1
+
+            await websocket.send_json({
+                "type": "done",
+                "session_id": session_id,
+                "full_text": " ".join(full),
+                "cancelled": cancel_event.is_set(),
+            })
+
+            # Fire-and-forget logging AFTER audio is delivered (doesn't add latency)
+            if not cancel_event.is_set():
+                await asyncio.to_thread(
+                    _log_voice_turn, user["user_id"], conf.get("subject"), session_id, len(transcript)
+                )
+        except WebSocketDisconnect:
+            raise
+        except Exception as exc:
+            logger.exception("Voice stream turn failed")
+            try:
+                await websocket.send_json({"type": "error", "message": str(exc)})
+            except Exception:
+                pass
+
+    try:
+        while True:
+            message = await websocket.receive()
+
+            if message.get("type") == "websocket.disconnect":
+                break
+
+            # Binary audio frame
+            if message.get("bytes") is not None:
+                audio_buf.extend(message["bytes"])
+                continue
+
+            text = message.get("text")
+            if not text:
+                continue
+
+            try:
+                msg = json.loads(text)
+            except Exception:
+                continue
+
+            mtype = msg.get("type")
+
+            if mtype == "config":
+                cfg = {
+                    "subject": msg.get("subject"),
+                    "session_id": msg.get("session_id") or str(uuid.uuid4()),
+                    "history": msg.get("history") or [],
+                    "mime": msg.get("mime") or "audio/wav",
+                }
+                audio_buf.clear()
+
+            elif mtype == "audio_end":
+                # Cancel any in-flight turn (barge-in / rapid re-ask) before starting a new one
+                if current_task and not current_task.done():
+                    cancel_event.set()
+                    try:
+                        await current_task
+                    except Exception:
+                        pass
+                cancel_event.clear()
+
+                utterance = bytes(audio_buf)
+                audio_buf.clear()
+                if len(utterance) < 200:  # too small to be speech
+                    await websocket.send_json({"type": "done", "session_id": cfg["session_id"], "full_text": ""})
+                    continue
+                current_task = asyncio.create_task(process_turn(utterance, dict(cfg)))
+
+            elif mtype == "cancel":
+                cancel_event.set()
+
+            elif mtype == "ping":
+                await websocket.send_json({"type": "pong"})
+
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.exception("Voice WebSocket error")
+    finally:
+        cancel_event.set()
+        if current_task and not current_task.done():
+            try:
+                await current_task
+            except Exception:
+                pass
