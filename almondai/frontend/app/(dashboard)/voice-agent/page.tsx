@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 
 import { useAuthStore } from "@/lib/store/authStore";
-import { useVoiceSession } from "@/lib/hooks/useVoiceSession";
+import { useVoiceSession, type LatencyStats } from "@/lib/hooks/useVoiceSession";
 import { useSubjectList } from "@/lib/hooks/useSubjectList";
 import type { VoiceMessage } from "@/lib/api/voice.api";
 
@@ -59,6 +59,41 @@ function Waveform({ level, state }: { level: number; state: string }) {
   );
 }
 
+// ─── Latency panel ───────────────────────────────────────────────────────────
+
+function LatencyPanel({ stats }: { stats: LatencyStats }) {
+  const row = (label: string, value: number | null | undefined, highlight?: boolean) =>
+    value != null ? (
+      <div key={label} className={`flex justify-between gap-4 ${highlight ? "text-[#d5c5a8]" : "text-[#b7ada0]"}`}>
+        <span>{label}</span>
+        <span className={`font-mono tabular-nums ${highlight ? "font-semibold" : ""}`}>
+          {value} ms
+        </span>
+      </div>
+    ) : null;
+
+  return (
+    <div className="mt-4 rounded-xl border border-[#2d2d2d] bg-[#161616] px-4 py-3 text-xs">
+      <p className="mb-2 font-medium text-[#7a7068] uppercase tracking-wider">Latency · last turn</p>
+      <div className="space-y-1">
+        {row("STT (Sarvam)",            stats.stt_ms)}
+        {row("LLM → first sentence",    stats.llm_first_sentence_ms)}
+        {row("TTS sentence 0 (Cartesia)", stats.first_tts_ms)}
+        {row("→ first audio heard",     stats.time_to_first_audio_ms, true)}
+        {row("Total turn",              stats.total_ms, true)}
+      </div>
+      {stats.sentence_tts_ms.length > 1 && (
+        <p className="mt-2 text-[#4c4640]">
+          TTS/sentence: {stats.sentence_tts_ms.map((v, i) => `s${i}=${v}`).join(" · ")} ms
+        </p>
+      )}
+      <p className="mt-1 text-[#4c4640]">
+        Audio: {(stats.audio_bytes / 1024).toFixed(1)} KB
+      </p>
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function VoiceAgentPage() {
@@ -86,7 +121,7 @@ export default function VoiceAgentPage() {
     setMessages((prev) => [...prev, msg]);
   }, []);
 
-  const { state, error, audioLevel, partialTranscript, liveCaption, startSession, stopSession, resetHistory } =
+  const { state, isReady, error, audioLevel, partialTranscript, liveCaption, latency, startSession, stopSession, resetHistory } =
     useVoiceSession({
       authToken: token ?? "",
       subject,
@@ -148,8 +183,9 @@ export default function VoiceAgentPage() {
 
   const statusText = () => {
     if (!token) return "Sign in to use Dr. Almond";
-    if (state === "loading") return "Warming up the microphone…";
-    if (state === "inactive") return "Tap to start voice session";
+    if (state === "loading") return "Starting microphone…";
+    if (state === "inactive" && !isReady) return "Connecting…";
+    if (state === "inactive") return "Ready — tap to start";
     if (state === "listening") return "Listening… just start speaking";
     if (state === "recording") return "Listening to you…";
     if (state === "processing") return "Dr. Almond is thinking…";
@@ -317,14 +353,23 @@ export default function VoiceAgentPage() {
 
         {/* Toggle button — single click to activate / deactivate */}
         <div className="flex justify-center">
-          <button
-            onClick={handleToggle}
-            disabled={!token || isBusy}
-            aria-label={isActive ? "Stop voice session" : "Start voice session"}
-            className={`flex h-20 w-20 items-center justify-center rounded-full border-2 transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-40 ${buttonStyle()}`}
-          >
-            {buttonIcon()}
-          </button>
+          <div className="relative">
+            <button
+              onClick={handleToggle}
+              disabled={!token || isBusy}
+              aria-label={isActive ? "Stop voice session" : "Start voice session"}
+              className={`flex h-20 w-20 items-center justify-center rounded-full border-2 transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-40 ${buttonStyle()}`}
+            >
+              {buttonIcon()}
+            </button>
+            {/* Green dot: WS pre-connected and session not yet active */}
+            {isReady && !isActive && (
+              <span
+                className="absolute bottom-1 right-1 h-2.5 w-2.5 rounded-full border-2 border-[#121212] bg-emerald-400"
+                title="Connection ready"
+              />
+            )}
+          </div>
         </div>
 
         {/* Session active indicator */}
@@ -334,6 +379,9 @@ export default function VoiceAgentPage() {
             Voice session active · tap to end
           </p>
         ) : null}
+
+        {/* Latency panel — shown after each completed turn */}
+        {latency ? <LatencyPanel stats={latency} /> : null}
 
         {/* New conversation */}
         {messages.length > 0 ? (

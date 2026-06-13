@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 import uuid
 from datetime import datetime, timezone
 import logging
@@ -263,6 +264,13 @@ async def voice_stream(websocket: WebSocket) -> None:
 
     async def process_turn(audio_bytes: bytes, conf: Dict[str, Any]) -> None:
         session_id = conf.get("session_id") or str(uuid.uuid4())
+        t0 = time.perf_counter()           # audio_end received
+        t_stt: float | None = None
+        t_first_llm_token: float | None = None
+        t_first_sentence: float | None = None
+        t_first_audio: float | None = None
+        sentence_tts_ms: List[float] = []
+
         try:
             if cancel_event.is_set():
                 return
@@ -272,8 +280,14 @@ async def voice_stream(websocket: WebSocket) -> None:
                 filename="utterance.wav",
                 content_type=conf.get("mime") or "audio/wav",
             )
+            t_stt = time.perf_counter()
             transcript = (transcript or "").strip()
-            await websocket.send_json({"type": "transcript", "text": transcript, "session_id": session_id})
+            await websocket.send_json({
+                "type": "transcript",
+                "text": transcript,
+                "session_id": session_id,
+                "stt_ms": round((t_stt - t0) * 1000),
+            })
 
             if not transcript or cancel_event.is_set():
                 await websocket.send_json({"type": "done", "session_id": session_id, "full_text": ""})
@@ -289,18 +303,27 @@ async def voice_stream(websocket: WebSocket) -> None:
             ):
                 if cancel_event.is_set():
                     break
+
+                if t_first_sentence is None:
+                    t_first_sentence = time.perf_counter()
+
                 full.append(sentence)
                 await websocket.send_json({"type": "sentence", "index": idx, "text": sentence})
 
+                t_tts_start = time.perf_counter()
                 try:
                     audio = await pipeline.text_to_speech(sentence)
                 except Exception:
                     logger.exception("Sentence TTS failed; skipping audio for sentence %d", idx)
                     audio = b""
+                t_tts_end = time.perf_counter()
+                sentence_tts_ms.append(round((t_tts_end - t_tts_start) * 1000))
 
                 if cancel_event.is_set():
                     break
                 if audio:
+                    if t_first_audio is None:
+                        t_first_audio = time.perf_counter()
                     await websocket.send_json({
                         "type": "audio",
                         "index": idx,
@@ -309,6 +332,24 @@ async def voice_stream(websocket: WebSocket) -> None:
                     })
                 idx += 1
 
+            t_done = time.perf_counter()
+
+            # Build timing breakdown (all values in ms, rounded)
+            timing: Dict[str, Any] = {
+                "stt_ms":          round((t_stt - t0) * 1000) if t_stt else None,
+                "llm_first_sentence_ms": round((t_first_sentence - t_stt) * 1000) if (t_first_sentence and t_stt) else None,
+                "first_tts_ms":    sentence_tts_ms[0] if sentence_tts_ms else None,
+                "time_to_first_audio_ms": round((t_first_audio - t0) * 1000) if t_first_audio else None,
+                "total_ms":        round((t_done - t0) * 1000),
+                "sentence_tts_ms": sentence_tts_ms,
+                "audio_bytes":     len(audio_bytes),
+            }
+            logger.info("Voice turn timing: %s", timing)
+
+            await websocket.send_json({
+                "type": "timing",
+                "timing": timing,
+            })
             await websocket.send_json({
                 "type": "done",
                 "session_id": session_id,
