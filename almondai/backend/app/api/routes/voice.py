@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -18,7 +19,18 @@ from app.services.voice.voice_pipeline import VoicePipeline
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/voice", tags=["voice"])
-pipeline = VoicePipeline()
+
+# Lazy singleton — instantiated on first request, not at import time
+_pipeline: VoicePipeline | None = None
+
+
+def get_pipeline() -> VoicePipeline:
+    global _pipeline
+    if _pipeline is None:
+        _pipeline = VoicePipeline()
+    return _pipeline
+
+
 streak_service = StreakService()
 
 
@@ -31,12 +43,61 @@ class VoiceAskRequest(BaseModel):
 
 class VoiceAskResponse(BaseModel):
     text_response: str
-    session_id: Optional[str] = None
+    session_id: str
 
 
 def _success(data: Dict[str, Any]) -> Dict[str, Any]:
     return {"success": True, "data": data}
 
+
+# ---------------------------------------------------------------------------
+# Health check — lets the frontend verify all three providers are configured
+# ---------------------------------------------------------------------------
+
+@router.get("/health")
+async def voice_health(user=Depends(require_auth)) -> Dict[str, Any]:
+    settings = get_settings()
+    return _success({
+        "sarvam": bool(settings.sarvam_api_key),
+        "groq": bool(settings.groq_api_key),
+        "cartesia": bool(settings.cartesia_api_key),
+        "sarvam_model": settings.sarvam_model,
+        "groq_voice_model": settings.groq_voice_model,
+        "cartesia_model": settings.cartesia_model,
+    })
+
+
+# ---------------------------------------------------------------------------
+# STT — receive audio blob, return transcript
+# ---------------------------------------------------------------------------
+
+@router.post("/transcribe")
+async def transcribe_audio(
+    file: UploadFile = File(...),
+    user=Depends(require_auth),
+) -> Dict[str, Any]:
+    """Receive recorded audio and return a Sarvam STT transcript."""
+    try:
+        audio_bytes = await file.read()
+        if not audio_bytes:
+            raise HTTPException(status_code=400, detail="empty audio file")
+
+        transcript = await get_pipeline().speech_to_text(
+            audio_bytes=audio_bytes,
+            filename=file.filename or "audio.webm",
+            content_type=file.content_type,
+        )
+        return _success({"transcript": transcript})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("STT failed")
+        raise HTTPException(status_code=500, detail={"error": True, "message": str(exc)}) from exc
+
+
+# ---------------------------------------------------------------------------
+# LLM — receive transcript, return text response
+# ---------------------------------------------------------------------------
 
 @router.post("/ask-text")
 async def ask_voice_text(
@@ -44,15 +105,14 @@ async def ask_voice_text(
     user=Depends(require_auth),
     service: AuthService = Depends(AuthService),
 ) -> Dict[str, Any]:
-    """
-    Receives transcript and returns AI text response.
-    Frontend uses this to get text first and then calls /speak.
-    """
+    """Receive transcript, run Groq inference, return text response."""
     try:
         profile = service.get_profile(user["user_id"])
-        student_category = (profile.get("student_category", "sprinter") if profile else "sprinter")
+        student_category = profile.get("student_category", "sprinter") if profile else "sprinter"
 
-        text_response = await pipeline.get_ai_response(
+        session_id = payload.session_id or str(uuid.uuid4())
+
+        text_response = await get_pipeline().get_ai_response(
             transcript=payload.transcript,
             conversation_history=payload.conversation_history,
             subject=payload.subject,
@@ -67,7 +127,7 @@ async def ask_voice_text(
                 user_id=user["user_id"],
                 activity_type="question_asked",
                 subject=payload.subject,
-                session_id=payload.session_id,
+                session_id=session_id,
                 metadata={"source": "voice", "transcript_length": len(payload.transcript)},
             )
             for badge in activity_row.get("new_achievements") or []:
@@ -76,7 +136,7 @@ async def ask_voice_text(
                     merged_achievements.append(badge)
                     seen_badges.add(badge_key)
         except Exception:
-            logger.exception("Voice activity logging failed")
+            logger.exception("Voice activity logging failed (non-fatal)")
 
         try:
             voice_achievements = achievements_service.evaluate_and_unlock(
@@ -90,50 +150,44 @@ async def ask_voice_text(
                     merged_achievements.append(badge)
                     seen_badges.add(badge_key)
         except Exception:
-            logger.exception("Voice achievement evaluation failed")
+            logger.exception("Voice achievement evaluation failed (non-fatal)")
 
-        body = VoiceAskResponse(text_response=text_response, session_id=payload.session_id).model_dump()
+        body = VoiceAskResponse(text_response=text_response, session_id=session_id).model_dump()
         body["new_achievements"] = merged_achievements
         return _success(body)
+
     except Exception as exc:
         logger.exception("Voice ask failed")
         raise HTTPException(status_code=500, detail={"error": True, "message": str(exc)}) from exc
 
 
+# ---------------------------------------------------------------------------
+# TTS — receive text, return MP3 bytes
+# ---------------------------------------------------------------------------
+
 @router.post("/speak")
 async def speak_text(payload: dict, user=Depends(require_auth)) -> Response:
-    """
-    Receives text and returns MP3 audio bytes.
-    Frontend plays this audio directly.
-    """
+    """Receive text and return Cartesia MP3 audio bytes."""
     try:
         text = str(payload.get("text", "")).strip()
         if not text:
             raise HTTPException(status_code=400, detail="text is required")
 
+        # Hard cap to prevent extremely long TTS requests
         if len(text) > 1000:
             text = text[:1000]
 
-        audio_bytes = await pipeline.text_to_speech(text)
+        audio_bytes = await get_pipeline().text_to_speech(text)
         return Response(
             content=audio_bytes,
             media_type="audio/mpeg",
-            headers={"Content-Length": str(len(audio_bytes)), "Cache-Control": "no-cache"},
+            headers={
+                "Content-Length": str(len(audio_bytes)),
+                "Cache-Control": "no-cache",
+            },
         )
     except HTTPException:
         raise
     except Exception as exc:
         logger.exception("TTS failed")
         raise HTTPException(status_code=500, detail={"error": True, "message": str(exc)}) from exc
-
-
-@router.get("/deepgram-token")
-async def get_deepgram_token(user=Depends(require_auth)) -> Dict[str, Any]:
-    """
-    Returns a token for frontend STT after auth validation.
-    """
-    settings = get_settings()
-    if not settings.deepgram_api_key:
-        raise HTTPException(status_code=500, detail={"error": True, "message": "Deepgram API key not configured"})
-
-    return _success({"token": settings.deepgram_api_key, "language": "en-US", "model": "nova-2"})

@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import AsyncGenerator
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
 
 from app.core.config import get_settings
@@ -90,6 +90,65 @@ class GroqLLMClient:
 
                 yield "AlmondAI could not process your request right now due to a temporary network issue."
                 return
+
+    async def generate_with_messages(
+        self,
+        messages: list[dict],
+        max_tokens: int = 300,
+        model: str | None = None,
+    ) -> str:
+        """Chat-completion variant that accepts a pre-built messages array (with history).
+
+        Used by the voice pipeline so spoken turns keep conversational context. An
+        optional ``model`` overrides the default (voice mode prefers a fast model).
+        """
+        lc_messages = []
+        for item in messages:
+            role = str(item.get("role", "")).strip().lower()
+            content = str(item.get("content", "")).strip()
+            if not content:
+                continue
+            if role == "system":
+                lc_messages.append(SystemMessage(content=content))
+            elif role == "assistant":
+                lc_messages.append(AIMessage(content=content))
+            else:
+                lc_messages.append(HumanMessage(content=content))
+
+        tried_fallback = False
+        active_model = model or self.model
+        for attempt in range(2):
+            try:
+                client = ChatGroq(
+                    api_key=self.api_key,
+                    model=active_model,
+                    max_tokens=max_tokens,
+                    temperature=self.temperature,
+                    streaming=False,
+                )
+                response = await client.ainvoke(lc_messages)
+                return str(response.content)
+            except Exception as exc:
+                msg = str(exc).lower()
+                if self._is_invalid_key_error(exc):
+                    logger.exception("Groq authentication failed")
+                    raise ValueError("Invalid GROQ_API_KEY. Please update backend/.env") from exc
+
+                if ("decommission" in msg or "decommissioned" in msg or "not available" in msg or "model not found" in msg) and not tried_fallback:
+                    active_model = self.fallback_model
+                    tried_fallback = True
+                    continue
+
+                if self._is_rate_limit_error(exc):
+                    return RATE_LIMIT_MESSAGE
+
+                if self._is_network_error(exc) and attempt == 0:
+                    await asyncio.sleep(0.5)
+                    continue
+
+                return "AlmondAI could not process your request right now due to a temporary network issue."
+
+        return "AlmondAI could not process your request right now due to a temporary network issue."
 
     async def generate_sync(self, prompt: str, system_prompt: str, max_tokens: int = 1500) -> str:
         messages = [SystemMessage(content=system_prompt), HumanMessage(content=prompt)]

@@ -35,6 +35,15 @@ class Settings(BaseSettings):
     tavily_api_key: str = ""
     deepgram_api_key: str = ""
     openrouter_api_key: str = ""
+    # Voice mode (STT: Sarvam, LLM: Groq, TTS: Cartesia)
+    sarvam_api_key: str = ""
+    sarvam_model: str = "saarika:v2.5"
+    sarvam_language_code: str = "en-IN"
+    cartesia_api_key: str = ""
+    cartesia_model: str = "sonic-2"
+    cartesia_voice_id: str = "a0e99841-438c-4a64-b679-ae501e7d6091"
+    cartesia_version: str = "2024-06-10"
+    groq_voice_model: str = "llama-3.1-8b-instant"
 
     @field_validator("allowed_origins")
     @classmethod

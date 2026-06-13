@@ -2,14 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-interface UseDeepgramTTSReturn {
+interface UseCartesiaTTSReturn {
   isSpeaking: boolean;
   speak: (text: string, token: string) => Promise<void>;
   stop: () => void;
   error: string | null;
 }
 
-export function useDeepgramTTS(): UseDeepgramTTSReturn {
+export function useCartesiaTTS(): UseCartesiaTTSReturn {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
