@@ -33,16 +33,14 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     tavily_api_key: str = ""
-    deepgram_api_key: str = ""
     openrouter_api_key: str = ""
-    # Voice mode (STT: Sarvam, LLM: Groq, TTS: Cartesia)
+    # Voice mode (STT: Sarvam, LLM: Groq, TTS: Deepgram Aura)
     sarvam_api_key: str = ""
     sarvam_model: str = "saarika:v2.5"
     sarvam_language_code: str = "en-IN"
-    cartesia_api_key: str = ""
-    cartesia_model: str = "sonic-2"
-    cartesia_voice_id: str = "a0e99841-438c-4a64-b679-ae501e7d6091"
-    cartesia_version: str = "2024-06-10"
+    deepgram_api_key: str = ""
+    deepgram_tts_model: str = "aura-2-orion-en"
+    deepgram_sample_rate: int = 44100
     groq_voice_model: str = "llama-3.1-8b-instant"
 
     @field_validator("allowed_origins")

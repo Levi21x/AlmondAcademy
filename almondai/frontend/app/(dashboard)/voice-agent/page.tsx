@@ -76,18 +76,13 @@ function LatencyPanel({ stats }: { stats: LatencyStats }) {
     <div className="mt-4 rounded-xl border border-[#2d2d2d] bg-[#161616] px-4 py-3 text-xs">
       <p className="mb-2 font-medium text-[#7a7068] uppercase tracking-wider">Latency · last turn</p>
       <div className="space-y-1">
-        {row("STT (Sarvam)",            stats.stt_ms)}
-        {row("LLM → first sentence",    stats.llm_first_sentence_ms)}
-        {row("TTS sentence 0 (Cartesia)", stats.first_tts_ms)}
-        {row("→ first audio heard",     stats.time_to_first_audio_ms, true)}
-        {row("Total turn",              stats.total_ms, true)}
+        {row("STT (Sarvam)",                  stats.stt_ms)}
+        {row("LLM + Deepgram → first audio",  stats.llm_to_audio_ms)}
+        {row("LLM → first sentence text",     stats.llm_first_sentence_ms)}
+        {row("→ first audio heard",           stats.time_to_first_audio_ms, true)}
+        {row("Total turn",                    stats.total_ms, true)}
       </div>
-      {stats.sentence_tts_ms.length > 1 && (
-        <p className="mt-2 text-[#4c4640]">
-          TTS/sentence: {stats.sentence_tts_ms.map((v, i) => `s${i}=${v}`).join(" · ")} ms
-        </p>
-      )}
-      <p className="mt-1 text-[#4c4640]">
+      <p className="mt-2 text-[#4c4640]">
         Audio: {(stats.audio_bytes / 1024).toFixed(1)} KB
       </p>
     </div>

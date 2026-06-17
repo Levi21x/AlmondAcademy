@@ -2,9 +2,24 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 from app.core.database import get_supabase_admin_client
 from app.services.achievements_service import achievements_service
+
+
+def _coerce_session_uuid(session_id: str | None) -> str | None:
+    """The study_activity.session_id column is a UUID. Some callers (e.g. the
+    voice streaming flow) pass a client-generated correlation id like
+    "vs_1781424477840_ncgxmio" which is not a valid UUID and would raise a
+    Postgres 22P02 error. Return the value only when it is a real UUID,
+    otherwise None so the caller can stash the original elsewhere."""
+    if not session_id:
+        return None
+    try:
+        return str(UUID(str(session_id)))
+    except (ValueError, AttributeError, TypeError):
+        return None
 
 
 VALID_ACTIVITY_TYPES = {
@@ -146,6 +161,13 @@ class StreakService:
         if activity_type not in VALID_ACTIVITY_TYPES:
             raise ValueError(f"Invalid activity_type: {activity_type}")
 
+        # The DB column is a UUID; non-UUID correlation ids (e.g. voice's
+        # "vs_..." session ids) are preserved in metadata instead.
+        db_session_id = _coerce_session_uuid(session_id)
+        row_metadata: Dict[str, Any] = dict(metadata or {})
+        if session_id and db_session_id is None:
+            row_metadata.setdefault("client_session_id", session_id)
+
         created = (
             self.client.table("study_activity")
             .insert(
@@ -154,8 +176,8 @@ class StreakService:
                     "activity_type": activity_type,
                     "subject": subject,
                     "topic_name": topic_name,
-                    "session_id": session_id,
-                    "metadata": metadata or {},
+                    "session_id": db_session_id,
+                    "metadata": row_metadata,
                 }
             )
             .execute()

@@ -7,7 +7,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
@@ -64,10 +64,10 @@ async def voice_health(user=Depends(require_auth)) -> Dict[str, Any]:
     return _success({
         "sarvam": bool(settings.sarvam_api_key),
         "groq": bool(settings.groq_api_key),
-        "cartesia": bool(settings.cartesia_api_key),
+        "deepgram": bool(settings.deepgram_api_key),
         "sarvam_model": settings.sarvam_model,
         "groq_voice_model": settings.groq_voice_model,
-        "cartesia_model": settings.cartesia_model,
+        "deepgram_model": settings.deepgram_tts_model,
     })
 
 
@@ -171,7 +171,7 @@ async def ask_voice_text(
 
 @router.post("/speak")
 async def speak_text(payload: dict, user=Depends(require_auth)) -> Response:
-    """Receive text and return Cartesia MP3 audio bytes."""
+    """Receive text and return Deepgram MP3 audio bytes."""
     try:
         text = str(payload.get("text", "")).strip()
         if not text:
@@ -257,36 +257,45 @@ async def voice_stream(websocket: WebSocket) -> None:
     except Exception:
         student_category = "sprinter"
 
+    # This session owns its own Deepgram TTS connection (the speak socket only
+    # synthesises one stream at a time, so it can't be a shared singleton).
+    try:
+        tts_client = pipeline.new_tts_client()
+    except Exception as exc:
+        await websocket.send_json({"type": "error", "message": str(exc)})
+        await websocket.close(code=1011)
+        return
+
+    # Pre-warm Deepgram (WS) and Groq (TCP+TLS + module imports) in the
+    # background.  Both run concurrently while the user is still speaking so
+    # neither adds to perceived latency.
+    asyncio.create_task(tts_client.preheat())
+    asyncio.create_task(pipeline.preheat_groq())
+
     cancel_event = asyncio.Event()
     current_task: asyncio.Task | None = None
-    audio_buf = bytearray()
-    cfg: Dict[str, Any] = {"subject": None, "session_id": str(uuid.uuid4()), "history": [], "mime": "audio/wav"}
+    cfg: Dict[str, Any] = {"subject": None, "session_id": str(uuid.uuid4()), "history": [], "mime": "audio/pcm"}
 
-    async def process_turn(audio_bytes: bytes, conf: Dict[str, Any]) -> None:
+    # Streaming STT state — one queue+task per utterance, reset each turn
+    stt_queue: asyncio.Queue[bytes | None] | None = None
+    stt_task: asyncio.Task[str] | None = None
+
+    async def process_turn(transcript: str, stt_ms: int, conf: Dict[str, Any]) -> None:
         session_id = conf.get("session_id") or str(uuid.uuid4())
-        t0 = time.perf_counter()           # audio_end received
-        t_stt: float | None = None
-        t_first_llm_token: float | None = None
+        t0 = time.perf_counter()           # transcript already ready; t0 = LLM start
         t_first_sentence: float | None = None
         t_first_audio: float | None = None
-        sentence_tts_ms: List[float] = []
 
         try:
             if cancel_event.is_set():
                 return
 
-            transcript = await pipeline.speech_to_text(
-                audio_bytes=audio_bytes,
-                filename="utterance.wav",
-                content_type=conf.get("mime") or "audio/wav",
-            )
-            t_stt = time.perf_counter()
             transcript = (transcript or "").strip()
             await websocket.send_json({
                 "type": "transcript",
                 "text": transcript,
                 "session_id": session_id,
-                "stt_ms": round((t_stt - t0) * 1000),
+                "stt_ms": stt_ms,
             })
 
             if not transcript or cancel_event.is_set():
@@ -294,55 +303,52 @@ async def voice_stream(websocket: WebSocket) -> None:
                 return
 
             full: List[str] = []
-            idx = 0
-            async for sentence in pipeline.stream_spoken_sentences(
-                transcript=transcript,
-                conversation_history=conf.get("history") or [],
-                subject=conf.get("subject"),
-                student_category=student_category,
-            ):
-                if cancel_event.is_set():
-                    break
+            idx = 0  # sentence counter
+            try:
+                async for kind, data in pipeline.stream_response(
+                    transcript=transcript,
+                    conversation_history=conf.get("history") or [],
+                    tts_client=tts_client,
+                    subject=conf.get("subject"),
+                    student_category=student_category,
+                ):
+                    if cancel_event.is_set():
+                        break
 
-                if t_first_sentence is None:
-                    t_first_sentence = time.perf_counter()
+                    if kind == "sentence":
+                        if t_first_sentence is None:
+                            t_first_sentence = time.perf_counter()
+                        full.append(data)
+                        await websocket.send_json({"type": "sentence", "index": idx, "text": data})
+                        idx += 1
 
-                full.append(sentence)
-                await websocket.send_json({"type": "sentence", "index": idx, "text": sentence})
-
-                t_tts_start = time.perf_counter()
-                try:
-                    audio = await pipeline.text_to_speech(sentence)
-                except Exception:
-                    logger.exception("Sentence TTS failed; skipping audio for sentence %d", idx)
-                    audio = b""
-                t_tts_end = time.perf_counter()
-                sentence_tts_ms.append(round((t_tts_end - t_tts_start) * 1000))
-
-                if cancel_event.is_set():
-                    break
-                if audio:
-                    if t_first_audio is None:
-                        t_first_audio = time.perf_counter()
-                    await websocket.send_json({
-                        "type": "audio",
-                        "index": idx,
-                        "mime": "audio/mpeg",
-                        "data": base64.b64encode(audio).decode("ascii"),
-                    })
-                idx += 1
+                    elif kind == "audio":
+                        if t_first_audio is None:
+                            t_first_audio = time.perf_counter()
+                        await websocket.send_json({
+                            "type": "audio",
+                            "index": max(0, idx - 1),
+                            "mime": "audio/wav",
+                            "data": base64.b64encode(data).decode("ascii"),
+                        })
+            except Exception:
+                logger.exception("Word-level streaming failed")
 
             t_done = time.perf_counter()
 
-            # Build timing breakdown (all values in ms, rounded)
+            # Timing breakdown (streaming STT runs in parallel with user speaking):
+            #   audio_end received
+            #     ──[stt_ms: Sarvam flush]──► transcript ready  (t0 here)
+            #       ──[llm_to_audio_ms: LLM+Deepgram]──► first audio
+            # time_to_first_audio_ms = stt_ms + llm_to_audio_ms
+            llm_to_audio = round((t_first_audio - t0) * 1000) if t_first_audio else None
             timing: Dict[str, Any] = {
-                "stt_ms":          round((t_stt - t0) * 1000) if t_stt else None,
-                "llm_first_sentence_ms": round((t_first_sentence - t_stt) * 1000) if (t_first_sentence and t_stt) else None,
-                "first_tts_ms":    sentence_tts_ms[0] if sentence_tts_ms else None,
-                "time_to_first_audio_ms": round((t_first_audio - t0) * 1000) if t_first_audio else None,
-                "total_ms":        round((t_done - t0) * 1000),
-                "sentence_tts_ms": sentence_tts_ms,
-                "audio_bytes":     len(audio_bytes),
+                "stt_ms":                stt_ms,
+                "llm_to_audio_ms":       llm_to_audio,
+                "llm_first_sentence_ms": round((t_first_sentence - t0) * 1000) if t_first_sentence else None,
+                "time_to_first_audio_ms": (stt_ms + llm_to_audio) if llm_to_audio is not None else None,
+                "total_ms":              stt_ms + round((t_done - t0) * 1000),
+                "audio_bytes":           0,
             }
             logger.info("Voice turn timing: %s", timing)
 
@@ -371,6 +377,16 @@ async def voice_stream(websocket: WebSocket) -> None:
             except Exception:
                 pass
 
+    def _make_audio_gen(q: asyncio.Queue[bytes | None]) -> Any:
+        """Return an async generator that drains a queue until None sentinel."""
+        async def _gen() -> AsyncGenerator[bytes, None]:
+            while True:
+                chunk = await q.get()
+                if chunk is None:
+                    return
+                yield chunk
+        return _gen()
+
     try:
         while True:
             message = await websocket.receive()
@@ -378,9 +394,17 @@ async def voice_stream(websocket: WebSocket) -> None:
             if message.get("type") == "websocket.disconnect":
                 break
 
-            # Binary audio frame
+            # Binary audio frame — route to Sarvam streaming STT in real time
             if message.get("bytes") is not None:
-                audio_buf.extend(message["bytes"])
+                frame = message["bytes"]
+                if stt_queue is None:
+                    q: asyncio.Queue[bytes | None] = asyncio.Queue()
+                    stt_queue = q
+                    stt_task = asyncio.create_task(
+                        pipeline.speech_to_text_streaming(_make_audio_gen(q)),
+                        name="sarvam-streaming-stt",
+                    )
+                stt_queue.put_nowait(frame)
                 continue
 
             text = message.get("text")
@@ -395,30 +419,70 @@ async def voice_stream(websocket: WebSocket) -> None:
             mtype = msg.get("type")
 
             if mtype == "config":
+                # Cancel any in-progress STT from a previous (interrupted) turn.
+                # Must await the cancel so the old task is fully gone before we
+                # reset stt_task — otherwise it keeps running in the background.
+                if stt_queue is not None:
+                    stt_queue.put_nowait(None)
+                    stt_queue = None
+                if stt_task is not None and not stt_task.done():
+                    stt_task.cancel()
+                    try:
+                        await stt_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                stt_task = None
+
                 cfg = {
                     "subject": msg.get("subject"),
                     "session_id": msg.get("session_id") or str(uuid.uuid4()),
                     "history": msg.get("history") or [],
-                    "mime": msg.get("mime") or "audio/wav",
+                    "mime": msg.get("mime") or "audio/pcm",
                 }
-                audio_buf.clear()
 
             elif mtype == "audio_end":
-                # Cancel any in-flight turn (barge-in / rapid re-ask) before starting a new one
+                t_audio_end = time.perf_counter()
+
+                # Signal end of audio to Sarvam (drains the generator)
+                if stt_queue is not None:
+                    stt_queue.put_nowait(None)
+                    stt_queue = None
+
+                # No frames were ever received (VAD misfire / stray audio_end)
+                if stt_task is None:
+                    await websocket.send_json({"type": "done", "session_id": cfg["session_id"], "full_text": ""})
+                    continue
+
+                # Cancel any in-flight LLM/TTS turn (barge-in / rapid re-ask)
                 if current_task and not current_task.done():
                     cancel_event.set()
                     try:
                         await current_task
-                    except Exception:
+                    except (asyncio.CancelledError, Exception):
                         pass
                 cancel_event.clear()
 
-                utterance = bytes(audio_buf)
-                audio_buf.clear()
-                if len(utterance) < 200:  # too small to be speech
+                # Wait for Sarvam to return the final transcript
+                transcript = ""
+                stt_ms_val = 0
+                try:
+                    transcript = await stt_task
+                    stt_ms_val = round((time.perf_counter() - t_audio_end) * 1000)
+                except asyncio.CancelledError:
+                    logger.debug("STT task cancelled before transcript arrived")
+                except Exception:
+                    logger.exception("Sarvam streaming STT failed")
+                finally:
+                    stt_task = None
+
+                if not transcript.strip():
                     await websocket.send_json({"type": "done", "session_id": cfg["session_id"], "full_text": ""})
                     continue
-                current_task = asyncio.create_task(process_turn(utterance, dict(cfg)))
+
+                current_task = asyncio.create_task(
+                    process_turn(transcript, stt_ms_val, dict(cfg)),
+                    name="voice-process-turn",
+                )
 
             elif mtype == "cancel":
                 cancel_event.set()
@@ -432,8 +496,25 @@ async def voice_stream(websocket: WebSocket) -> None:
         logger.exception("Voice WebSocket error")
     finally:
         cancel_event.set()
-        if current_task and not current_task.done():
+        if stt_queue is not None:
             try:
-                await current_task
+                stt_queue.put_nowait(None)
             except Exception:
                 pass
+        if stt_task is not None and not stt_task.done():
+            stt_task.cancel()
+            try:
+                await stt_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if current_task and not current_task.done():
+            current_task.cancel()
+            try:
+                await current_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        # Close this session's Deepgram TTS connection.
+        try:
+            await tts_client.close()
+        except Exception:
+            pass

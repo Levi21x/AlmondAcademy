@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { MicVAD, RealTimeVADOptions } from "@ricky0123/vad-web";
 
 import type { VoiceMessage } from "@/lib/api/voice.api";
-import { encodeWavFromFloat32 } from "@/lib/audio/encodeWav";
 import { StreamingAudioPlayer } from "@/lib/audio/StreamingAudioPlayer";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -27,11 +26,10 @@ export interface UseVoiceSessionOptions {
 
 export interface LatencyStats {
   stt_ms:                    number | null;
-  llm_first_sentence_ms:     number | null;
-  first_tts_ms:              number | null;
-  time_to_first_audio_ms:    number | null;
+  llm_to_audio_ms:           number | null;   // STT done → first audio (LLM ramp + Cartesia)
+  llm_first_sentence_ms:     number | null;   // STT done → first sentence text event
+  time_to_first_audio_ms:    number | null;   // end-to-end = stt_ms + llm_to_audio_ms
   total_ms:                  number;
-  sentence_tts_ms:           number[];
   audio_bytes:               number;
 }
 
@@ -53,8 +51,12 @@ export interface UseVoiceSessionReturn {
 
 const VAD_OPTS = {
   model: "v5" as const,
-  positiveSpeechThreshold: 0.6,
-  negativeSpeechThreshold: 0.4,
+  // Lower thresholds = more sensitive to quiet/normal-volume speech.
+  // (Silero defaults are 0.5/0.35; these sit below that so soft speakers
+  // are picked up without having to talk loud. noiseSuppression guards
+  // against false triggers.)
+  positiveSpeechThreshold: 0.35,
+  negativeSpeechThreshold: 0.25,
   redemptionMs: 800,
   minSpeechMs: 250,
   preSpeechPadMs: 200,
@@ -256,31 +258,33 @@ export function useVoiceSession(opts: UseVoiceSessionOptions): UseVoiceSessionRe
     };
   }, []);
 
-  // ─── Send captured utterance ─────────────────────────────────────────────
+  // Tracks whether VAD has confirmed speech is active (gates frame streaming)
+  const isSpeakingRef = useRef(false);
+  // Rolling buffer of the last ~640ms of frames captured before speech is confirmed.
+  // Flushed to the backend when onSpeechRealStart fires so the first words aren't lost.
+  const preSpeechBufRef = useRef<ArrayBuffer[]>([]);
+  const PRE_SPEECH_MAX_FRAMES = 20; // 20 × ~32 ms = ~640 ms
 
-  const sendUtterance = useCallback((audio: Float32Array) => {
+  // Convert Float32 PCM [-1,1] → Int16 raw bytes for Sarvam streaming STT
+  const float32ToInt16Buffer = (float32: Float32Array): ArrayBuffer => {
+    const int16 = new Int16Array(float32.length);
+    for (let i = 0; i < float32.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32[i]));
+      int16[i] = s < 0 ? s * 32768 : s * 32767;
+    }
+    return int16.buffer;
+  };
+
+  const sendAudioEnd = useCallback(() => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       setError("Voice connection lost. Tap to restart.");
       go("listening");
       return;
     }
+    isSpeakingRef.current = false;
     setLatency(null);
-
-    const wav = encodeWavFromFloat32(audio, 16000);
-    wav.arrayBuffer().then((buf) => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      ws.send(JSON.stringify({
-        type: "config",
-        subject: optsRef.current.subject,
-        session_id: optsRef.current.sessionId,
-        mime: "audio/wav",
-        history: historyRef.current.map((m) => ({ role: m.role, content: m.content })),
-      }));
-      ws.send(buf);
-      ws.send(JSON.stringify({ type: "audio_end" }));
-    });
-
+    ws.send(JSON.stringify({ type: "audio_end" }));
     go("processing");
   }, [go]);
 
@@ -331,9 +335,24 @@ export function useVoiceSession(opts: UseVoiceSessionOptions): UseVoiceSessionRe
           navigator.mediaDevices.getUserMedia({
             audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
           }),
-        onFrameProcessed: (probs: { isSpeech: number }) => {
+        onFrameProcessed: (probs: { isSpeech: number; notSpeech: number }, frame?: Float32Array) => {
           const now = performance.now();
           if (now - lastLevelRef.current > 50) { lastLevelRef.current = now; setLevel(probs.isSpeech); }
+          if (!frame) return;
+          const pcm = float32ToInt16Buffer(frame);
+          if (isSpeakingRef.current) {
+            // Send every frame of the utterance (incl. natural micro-pauses) so
+            // Sarvam gets clean continuous audio. Silero defines the utterance
+            // boundaries; flush() at the end is our sole STT-finalize signal.
+            const ws = wsRef.current;
+            if (ws && ws.readyState === WebSocket.OPEN) ws.send(pcm);
+          } else {
+            // Keep a rolling window of pre-speech frames so first words aren't lost
+            preSpeechBufRef.current.push(pcm);
+            if (preSpeechBufRef.current.length > PRE_SPEECH_MAX_FRAMES) {
+              preSpeechBufRef.current.shift();
+            }
+          }
         },
         onSpeechRealStart: () => {
           const s = stateRef.current;
@@ -343,13 +362,39 @@ export function useVoiceSession(opts: UseVoiceSessionOptions): UseVoiceSessionRe
             turnTextRef.current = "";
             setLiveCaption("");
           }
+          setLatency(null);
+          const ws = wsRef.current;
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            // Send config so the backend opens the Sarvam streaming session
+            ws.send(JSON.stringify({
+              type: "config",
+              subject: optsRef.current.subject,
+              session_id: optsRef.current.sessionId,
+              mime: "audio/pcm",
+              sample_rate: 16000,
+              history: historyRef.current.map((m) => ({ role: m.role, content: m.content })),
+            }));
+            // Flush pre-speech buffer so the first words (captured before VAD confirmed
+            // speech) are included — prevents the first syllable from being clipped
+            for (const buf of preSpeechBufRef.current) ws.send(buf);
+          }
+          preSpeechBufRef.current = [];
+          isSpeakingRef.current = true;
           go("recording");
         },
-        onSpeechEnd: (audio: Float32Array) => {
-          if (stateRef.current === "recording") sendUtterance(audio);
+        onSpeechEnd: () => {
+          if (stateRef.current === "recording") sendAudioEnd();
         },
         onVADMisfire: () => {
-          if (stateRef.current === "recording") go("listening");
+          if (stateRef.current === "recording") {
+            // Close any open Sarvam STT session before going back to listening
+            isSpeakingRef.current = false;
+            const ws = wsRef.current;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "audio_end" }));
+            }
+            go("listening");
+          }
         },
       };
 
@@ -372,7 +417,7 @@ export function useVoiceSession(opts: UseVoiceSessionOptions): UseVoiceSessionRe
 
     sessionActiveRef.current = true;
     go("listening");
-  }, [go, openWs, startPingTimer, sendCancel, sendUtterance]);
+  }, [go, openWs, startPingTimer, sendCancel, sendAudioEnd]);
 
   const stopSession = useCallback(() => {
     sessionActiveRef.current = false;

@@ -95,11 +95,11 @@ export async function askVoiceQuestion(
   };
 }
 
-export async function checkVoiceHealth(authToken: string): Promise<{ sarvam: boolean; groq: boolean; cartesia: boolean }> {
+export async function checkVoiceHealth(authToken: string): Promise<{ sarvam: boolean; groq: boolean; deepgram: boolean }> {
   const res = await fetch(`${apiBase}/api/v1/voice/health`, {
     headers: { Authorization: `Bearer ${authToken}` },
   });
-  if (!res.ok) return { sarvam: false, groq: false, cartesia: false };
-  const data = (await res.json()) as ApiEnvelope<{ sarvam: boolean; groq: boolean; cartesia: boolean }>;
+  if (!res.ok) return { sarvam: false, groq: false, deepgram: false };
+  const data = (await res.json()) as ApiEnvelope<{ sarvam: boolean; groq: boolean; deepgram: boolean }>;
   return data.data;
 }

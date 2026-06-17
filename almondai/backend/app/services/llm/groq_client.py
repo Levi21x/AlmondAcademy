@@ -20,13 +20,28 @@ class GroqLLMClient:
         api_key = settings.groq_api_key.strip()
         if not api_key or api_key == "your_groq_api_key_here":
             raise ValueError("Invalid GROQ_API_KEY. Please set a valid key in backend/.env")
-        # Initialize primary client; allow fallback to a smaller model if primary unavailable
         self.api_key = api_key
         self.model = settings.groq_model
-        self.fallback_model = "llama-3.1-8b-instant"
+        self.fallback_model = "llama-3.2-3b-preview"   # different model so deprecation of primary doesn't also kill fallback
         self.max_tokens = settings.max_tokens
         self.temperature = 0.3
-        self.client = ChatGroq(api_key=self.api_key, model=self.model, max_tokens=self.max_tokens, temperature=self.temperature, streaming=True)
+        # Cache ChatGroq instances by (model, max_tokens) so the underlying
+        # httpx.AsyncClient and its TCP+TLS connection are reused across calls.
+        # Creating a fresh ChatGroq per call was causing ~4-5 s cold-start on
+        # the first voice turn (module imports + TLS handshake).
+        self._client_cache: dict[tuple[str, int], ChatGroq] = {}
+
+    def _get_client(self, model: str, max_tokens: int) -> ChatGroq:
+        key = (model, max_tokens)
+        if key not in self._client_cache:
+            self._client_cache[key] = ChatGroq(
+                api_key=self.api_key,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=self.temperature,
+                streaming=True,  # astream() and ainvoke() both work on a streaming client
+            )
+        return self._client_cache[key]
 
     def _is_rate_limit_error(self, exc: Exception) -> bool:
         message = str(exc).lower()
@@ -52,13 +67,7 @@ class GroqLLMClient:
         active_model = self.model
         for attempt in range(2):
             try:
-                client = ChatGroq(
-                    api_key=self.api_key,
-                    model=active_model,
-                    max_tokens=max_tokens,
-                    temperature=self.temperature,
-                    streaming=stream,
-                )
+                client = self._get_client(active_model, max_tokens)
                 if stream:
                     async for chunk in client.astream(messages):
                         content = getattr(chunk, "content", "")
@@ -119,13 +128,7 @@ class GroqLLMClient:
         active_model = model or self.model
         for attempt in range(2):
             try:
-                client = ChatGroq(
-                    api_key=self.api_key,
-                    model=active_model,
-                    max_tokens=max_tokens,
-                    temperature=self.temperature,
-                    streaming=False,
-                )
+                client = self._get_client(active_model, max_tokens)
                 response = await client.ainvoke(lc_messages)
                 return str(response.content)
             except Exception as exc:
@@ -179,13 +182,7 @@ class GroqLLMClient:
         active_model = model or self.model
         for attempt in range(2):
             try:
-                client = ChatGroq(
-                    api_key=self.api_key,
-                    model=active_model,
-                    max_tokens=max_tokens,
-                    temperature=self.temperature,
-                    streaming=True,
-                )
+                client = self._get_client(active_model, max_tokens)
                 async for chunk in client.astream(lc_messages):
                     content = getattr(chunk, "content", "")
                     if content:
@@ -219,13 +216,7 @@ class GroqLLMClient:
         active_model = self.model
         for attempt in range(2):
             try:
-                client = ChatGroq(
-                    api_key=self.api_key,
-                    model=active_model,
-                    max_tokens=max_tokens,
-                    temperature=self.temperature,
-                    streaming=False,
-                )
+                client = self._get_client(active_model, max_tokens)
                 response = await client.ainvoke(messages)
                 return str(response.content)
             except Exception as exc:
