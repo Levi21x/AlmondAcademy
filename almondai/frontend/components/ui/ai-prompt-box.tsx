@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { ArrowUp, BarChart2, Globe, Layers, Mic } from "lucide-react";
+import { ArrowUp, BarChart2, Globe, Layers, Mic, Paperclip, X } from "lucide-react";
 
 type PromptMode = "none" | "search" | "deep-explain" | "visualise";
 
@@ -20,6 +20,7 @@ interface PromptInputBoxProps {
   onMicClick?: () => void;
   speechSupported?: boolean;
   onModeChange?: (mode: PromptMode) => void;
+  acceptAttachments?: boolean;
 }
 
 function ToolButton({
@@ -76,10 +77,13 @@ export function PromptInputBox({
   onMicClick,
   speechSupported = false,
   onModeChange,
+  acceptAttachments = false,
 }: PromptInputBoxProps) {
   const [value, setValue] = useState("");
   const [mode, setMode] = useState<PromptMode>("none");
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const changeMode = (next: PromptMode) => {
     const resolved = mode === next ? "none" : next;
@@ -114,8 +118,9 @@ export function PromptInputBox({
           ? "[Visualise]\n"
           : "";
 
-    onSend(`${promptPrefix}${trimmed}`, []);
+    onSend(`${promptPrefix}${trimmed}`, pendingFiles);
     setValue("");
+    setPendingFiles([]);
   };
 
   const activePlaceholder = isListening && interimTranscript ? interimTranscript : placeholder;
@@ -138,6 +143,40 @@ export function PromptInputBox({
           placeholder={activePlaceholder}
           className="max-h-36 min-h-[56px] w-full resize-none bg-transparent px-2 py-2 text-[15px] leading-relaxed text-[#e5e2e1] outline-none placeholder:text-[#6b6460]"
         />
+
+        {/* Pending file chips */}
+        {pendingFiles.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-2 px-1">
+            {pendingFiles.map((f, i) => (
+              <span
+                key={i}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                  fontFamily: "var(--aa-fb)",
+                  fontSize: "0.75rem",
+                  color: "var(--aa-amber)",
+                  background: "var(--aa-amber-bg)",
+                  border: "1px solid var(--aa-amber-border)",
+                  borderRadius: "var(--aa-r-full)",
+                  padding: "3px 10px 3px 8px",
+                }}
+              >
+                <Paperclip size={11} strokeWidth={2} />
+                {f.name}
+                <button
+                  type="button"
+                  onClick={() => setPendingFiles((prev) => prev.filter((_, j) => j !== i))}
+                  aria-label={`Remove ${f.name}`}
+                  style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", color: "inherit" }}
+                >
+                  <X size={11} strokeWidth={2.5} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
 
         <div className="mt-2 flex flex-wrap items-center justify-between gap-3 px-1">
           <div className="flex items-center gap-2">
@@ -165,6 +204,45 @@ export function PromptInputBox({
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Attach button */}
+            {acceptAttachments && (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf,.docx,.doc,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.webp"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) setPendingFiles((prev) => [...prev, file]);
+                    e.target.value = "";
+                  }}
+                />
+                <Tooltip.Root>
+                  <Tooltip.Trigger asChild>
+                    <button
+                      type="button"
+                      disabled={disabled || isLoading}
+                      onClick={() => fileInputRef.current?.click()}
+                      className={`inline-flex h-9 w-9 items-center justify-center rounded-full border transition ${
+                        pendingFiles.length > 0
+                          ? "border-[var(--aa-amber-border)] bg-[var(--aa-amber-bg)] text-[var(--aa-amber)]"
+                          : "border-[#4c463d] bg-[#1a1a1a] text-[#e5e2e1] hover:text-[#fff2de]"
+                      } disabled:cursor-not-allowed disabled:opacity-40`}
+                      aria-label="Attach a file"
+                    >
+                      <Paperclip size={17} strokeWidth={1.9} />
+                    </button>
+                  </Tooltip.Trigger>
+                  <Tooltip.Portal>
+                    <Tooltip.Content className="z-50 rounded-md border border-[#4c463d] bg-[#1a1a1a] px-2 py-1 text-xs text-[#e5e2e1]" sideOffset={6}>
+                      Attach a file
+                      <Tooltip.Arrow className="fill-[#1a1a1a]" />
+                    </Tooltip.Content>
+                  </Tooltip.Portal>
+                </Tooltip.Root>
+              </>
+            )}
             <Tooltip.Root>
               <Tooltip.Trigger asChild>
                 <button

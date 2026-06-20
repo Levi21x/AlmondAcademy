@@ -23,3 +23,4 @@ google-genai==1.73.1
 razorpay==1.4.2
 websockets>=11.0
 sarvamai>=0.1.0
+Pillow==11.1.0

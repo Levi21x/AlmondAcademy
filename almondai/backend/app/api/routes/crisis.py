@@ -319,11 +319,10 @@ def get_activation_status(user=Depends(require_auth), service: AuthService = Dep
     activation = _get_activation_row(client=client, user_id=user_id)
     active = _get_active_session(client=client, user_id=user_id)
     premium = _is_premium(service=service, user_id=user_id)
-    can_activate = premium or not bool(activation.get("free_activation_used", False))
 
     return _success(
         {
-            "can_activate": can_activate,
+            "can_activate": True,
             "free_activation_used": bool(activation.get("free_activation_used", False)),
             "is_premium": premium,
             "active_session": _with_progress(client=client, user_id=user_id, session_row=active) if active else None,
@@ -341,17 +340,6 @@ async def activate_crisis_mode(
     user_id = user["user_id"]
 
     activation = _get_activation_row(client=client, user_id=user_id)
-    premium = _is_premium(service=service, user_id=user_id)
-
-    if not premium and bool(activation.get("free_activation_used", False)):
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": True,
-                "message": "You have used your free Crisis Mode activation. Upgrade to AlmondAI Premium for unlimited access.",
-                "code": "CRISIS_FREE_ACTIVATION_USED",
-            },
-        )
 
     profile = service.get_profile(user_id)
     if not profile:
@@ -491,9 +479,6 @@ async def activate_crisis_mode(
     activation_update: Dict[str, Any] = {
         "total_activations": int(activation.get("total_activations", 0) or 0) + 1,
     }
-    if not premium:
-        activation_update["free_activation_used"] = True
-        activation_update["free_activation_used_at"] = datetime.now(timezone.utc).isoformat()
     client.table("crisis_activations").update(activation_update).eq("id", activation["id"]).execute()
 
     return _success(_with_progress(client=client, user_id=user_id, session_row=session))

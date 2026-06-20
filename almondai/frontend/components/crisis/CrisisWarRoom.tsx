@@ -8,7 +8,6 @@ import {
   Check,
   ChevronRight,
   Clock,
-  Lock,
   Moon,
   RefreshCw,
   Shield,
@@ -18,6 +17,8 @@ import {
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import {
   activateCrisisMode,
@@ -229,16 +230,7 @@ export function CrisisWarRoom() {
       });
       setSession(created);
       setActiveTab("today");
-      setStatus((prev) =>
-        prev
-          ? {
-              ...prev,
-              active_session: created,
-              can_activate: prev.is_premium,
-              free_activation_used: prev.is_premium ? prev.free_activation_used : true,
-            }
-          : prev,
-      );
+      setStatus((prev) => (prev ? { ...prev, active_session: created } : prev));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to activate crisis mode");
     } finally {
@@ -357,37 +349,6 @@ export function CrisisWarRoom() {
     );
   }
 
-  // Premium locked
-  const locked = status && !status.can_activate && !session;
-
-  if (locked) {
-    return (
-      <div className="flex min-h-[400px] items-center justify-center">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.96 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ type: "spring", stiffness: 200, damping: 22 }}
-          className="w-full max-w-md rounded-2xl border border-[#5a2f2a] bg-[#1f1f1f] p-8 text-center"
-        >
-          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-[#5a2f2a] bg-[#2c1d1b]">
-            <Lock size={20} strokeWidth={2} className="text-[#ffb4ab]" />
-          </div>
-          <h2 className="aa-h2 text-[var(--aa-text-1)]">Crisis Mode — Premium</h2>
-          <p className="mt-2 text-sm" style={{ color: "var(--aa-text-3)" }}>
-            You have used your free activation. Upgrade for unlimited access.
-          </p>
-          <Link
-            href="/upgrade"
-            className="aa-press mt-6 inline-flex items-center gap-2 rounded-xl bg-[#ffcf9d] px-5 py-2.5 text-sm font-semibold text-[#3f2a16]"
-          >
-            Upgrade to Premium
-            <ChevronRight size={14} strokeWidth={2.5} />
-          </Link>
-        </motion.div>
-      </div>
-    );
-  }
-
   // ── Input form (no active session) ───────────────────────────────────────────
 
   if (!session) {
@@ -408,12 +369,6 @@ export function CrisisWarRoom() {
             </p>
           </div>
         </div>
-
-        {status && !status.free_activation_used && (
-          <div className="rounded-xl border border-green-800/50 bg-green-900/15 px-4 py-2.5 text-sm text-green-300">
-            1 free activation available
-          </div>
-        )}
 
         {isActivating ? (
           // Loading state
@@ -621,11 +576,7 @@ export function CrisisWarRoom() {
 
             {/* Form footer */}
             <div className="flex items-center justify-between gap-4 border-t border-[#353534] px-6 py-4">
-              <p className="text-xs" style={{ color: "var(--aa-text-3)" }}>
-                {status && !status.is_premium && !status.free_activation_used
-                  ? "This will use your 1 free activation."
-                  : ""}
-              </p>
+              <p className="text-xs" style={{ color: "var(--aa-text-3)" }} />
               <div className="flex items-center gap-2">
                 {/* Last Night Mode shortcut */}
                 <button
@@ -1146,7 +1097,11 @@ export function CrisisWarRoom() {
                   </div>
                 )}
                 {!teachLoading && teachTab === "explanation" && (
-                  <p className="whitespace-pre-wrap leading-relaxed">{teaching?.teaching_content ?? "No content"}</p>
+                  <div className="prose prose-sm prose-invert max-w-none leading-relaxed [&_h2]:mb-2 [&_h2]:mt-4 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:text-[#fff2de] [&_li]:text-[#e5e2e1] [&_ol]:pl-4 [&_p]:text-[#e5e2e1] [&_strong]:text-[#fff2de] [&_ul]:pl-4">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {teaching?.teaching_content ?? "No content"}
+                    </ReactMarkdown>
+                  </div>
                 )}
                 {!teachLoading && teachTab === "key-points" && (
                   <ol className="list-decimal space-y-2 pl-5">

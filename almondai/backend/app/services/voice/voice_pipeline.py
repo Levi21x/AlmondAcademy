@@ -647,6 +647,7 @@ class VoicePipeline:
         conversation_history: list[dict[str, Any]],
         subject: str | None = None,
         student_category: str = "sprinter",
+        user_id: str | None = None,
     ) -> str:
         settings = get_settings()
         messages = self._build_messages(transcript, conversation_history, subject, student_category)
@@ -663,6 +664,7 @@ class VoicePipeline:
         conversation_history: list[dict[str, Any]],
         subject: str | None = None,
         student_category: str = "sprinter",
+        user_id: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """Stream the LLM response and yield complete, TTS-ready sentences.
 
@@ -705,6 +707,7 @@ class VoicePipeline:
         tts_client: DeepgramStreamClient,
         subject: str | None = None,
         student_category: str = "sprinter",
+        user_id: str | None = None,
     ) -> AsyncGenerator[tuple[str, Any], None]:
         """Yield ``("sentence", str)`` and ``("audio", bytes)`` events for one turn.
 

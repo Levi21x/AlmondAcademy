@@ -311,6 +311,7 @@ async def voice_stream(websocket: WebSocket) -> None:
                     tts_client=tts_client,
                     subject=conf.get("subject"),
                     student_category=student_category,
+                    user_id=user["user_id"],
                 ):
                     if cancel_event.is_set():
                         break

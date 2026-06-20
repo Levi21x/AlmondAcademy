@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 
 import { useAuthStore } from "@/lib/store/authStore";
-import { useVoiceSession, type LatencyStats } from "@/lib/hooks/useVoiceSession";
+import { useVoiceSession } from "@/lib/hooks/useVoiceSession";
 import { useSubjectList } from "@/lib/hooks/useSubjectList";
 import type { VoiceMessage } from "@/lib/api/voice.api";
 
@@ -59,35 +59,6 @@ function Waveform({ level, state }: { level: number; state: string }) {
   );
 }
 
-// ─── Latency panel ───────────────────────────────────────────────────────────
-
-function LatencyPanel({ stats }: { stats: LatencyStats }) {
-  const row = (label: string, value: number | null | undefined, highlight?: boolean) =>
-    value != null ? (
-      <div key={label} className={`flex justify-between gap-4 ${highlight ? "text-[#d5c5a8]" : "text-[#b7ada0]"}`}>
-        <span>{label}</span>
-        <span className={`font-mono tabular-nums ${highlight ? "font-semibold" : ""}`}>
-          {value} ms
-        </span>
-      </div>
-    ) : null;
-
-  return (
-    <div className="mt-4 rounded-xl border border-[#2d2d2d] bg-[#161616] px-4 py-3 text-xs">
-      <p className="mb-2 font-medium text-[#7a7068] uppercase tracking-wider">Latency · last turn</p>
-      <div className="space-y-1">
-        {row("STT (Sarvam)",                  stats.stt_ms)}
-        {row("LLM + Deepgram → first audio",  stats.llm_to_audio_ms)}
-        {row("LLM → first sentence text",     stats.llm_first_sentence_ms)}
-        {row("→ first audio heard",           stats.time_to_first_audio_ms, true)}
-        {row("Total turn",                    stats.total_ms, true)}
-      </div>
-      <p className="mt-2 text-[#4c4640]">
-        Audio: {(stats.audio_bytes / 1024).toFixed(1)} KB
-      </p>
-    </div>
-  );
-}
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
@@ -116,7 +87,7 @@ export default function VoiceAgentPage() {
     setMessages((prev) => [...prev, msg]);
   }, []);
 
-  const { state, isReady, error, audioLevel, partialTranscript, liveCaption, latency, startSession, stopSession, resetHistory } =
+  const { state, isReady, error, audioLevel, partialTranscript, liveCaption, startSession, stopSession, resetHistory } =
     useVoiceSession({
       authToken: token ?? "",
       subject,
@@ -374,9 +345,6 @@ export default function VoiceAgentPage() {
             Voice session active · tap to end
           </p>
         ) : null}
-
-        {/* Latency panel — shown after each completed turn */}
-        {latency ? <LatencyPanel stats={latency} /> : null}
 
         {/* New conversation */}
         {messages.length > 0 ? (

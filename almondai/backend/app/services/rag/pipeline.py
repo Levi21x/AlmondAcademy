@@ -290,9 +290,10 @@ class AlmondRAGPipeline:
         )
 
         # --- RAG gate (Option 3) ---
-        rag_mode = _rag_decision(pre_tier, subject_filter)
         rag_used = False
         rag_context: str = ""
+
+        rag_mode = _rag_decision(pre_tier, subject_filter)
 
         if rag_mode == "skip":
             print(f"[rag_debug] Skipped — tier={pre_tier.value}, no subject filter")
@@ -479,9 +480,10 @@ class AlmondRAGPipeline:
             student_category=student_category,
         )
 
-        rag_mode = _rag_decision(pre_tier, subject_filter)
         rag_used = False
         rag_context: str = ""
+
+        rag_mode = _rag_decision(pre_tier, subject_filter)
 
         if rag_mode == "skip":
             print(f"[rag_debug] Skipped — tier={pre_tier.value}, no subject filter")

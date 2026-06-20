@@ -1001,6 +1001,7 @@ export default function AITutorPage() {
                 onModeChange={(m) => {
                   setIsSearchMode(m === "search");
                 }}
+                acceptAttachments
               />
               <p className="mt-2 text-center text-xs text-[#b7ada0]">
                 AlmondAI can make mistakes. Verify important medical information.
