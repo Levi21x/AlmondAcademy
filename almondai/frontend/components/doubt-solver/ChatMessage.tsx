@@ -46,7 +46,7 @@ export function ChatMessage({ role, content, isStreaming = false, personalized =
             <div className="flex h-6 w-6 items-center justify-center rounded bg-[#d5c5a8]/10">
               <Brain size={14} className="text-[#d5c5a8]" strokeWidth={1.8} />
             </div>
-            <span className="uppercase tracking-widest">AlmondAI</span>
+            <span className="uppercase tracking-widest">Dr. Almond</span>
             {personalized ? (
               <span
                 title="Response personalized based on your learning history"

@@ -111,7 +111,7 @@ export function ChatInterface({
           })
         )}
 
-        {isLoading && messages.length === 0 ? <div className="text-sm text-[#cec5b9]">Waiting for AlmondAI response...</div> : null}
+        {isLoading && messages.length === 0 ? <div className="text-sm text-[#cec5b9]">Waiting for Dr. Almond...</div> : null}
         <div ref={bottomRef} />
       </div>
 
@@ -125,7 +125,7 @@ export function ChatInterface({
           isLoading={isStreaming}
           onStop={onStop}
           disabled={disabled}
-          placeholder="Ask AlmondAI anything about medicine..."
+          placeholder="Ask Dr. Almond anything about medicine..."
         />
       </div>
     </div>

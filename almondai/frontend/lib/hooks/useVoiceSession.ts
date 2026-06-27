@@ -17,11 +17,15 @@ export type SessionState =
   | "speaking";   // TTS streaming back / playing
 
 export interface UseVoiceSessionOptions {
-  authToken:   string;
-  subject:     string;
-  sessionId:   string;
-  onMessage:   (msg: VoiceMessage) => void;
-  onSessionId: (id: string) => void;
+  authToken:            string;
+  subject:              string;
+  sessionId:            string;
+  onMessage:            (msg: VoiceMessage) => void;
+  onSessionId:          (id: string) => void;
+  /** When provided, used instead of the internal historyRef when sending config to the backend.
+   *  Pass the AI Tutor's full messages array (mapped to VoiceMessage) so the voice engine
+   *  has the complete shared conversation context on every utterance. */
+  conversationHistory?: VoiceMessage[];
 }
 
 export interface LatencyStats {
@@ -365,14 +369,17 @@ export function useVoiceSession(opts: UseVoiceSessionOptions): UseVoiceSessionRe
           setLatency(null);
           const ws = wsRef.current;
           if (ws && ws.readyState === WebSocket.OPEN) {
-            // Send config so the backend opens the Sarvam streaming session
+            // Send config so the backend opens the Sarvam streaming session.
+            // Prefer the caller-supplied conversationHistory (AI Tutor's full shared thread)
+            // over the internal historyRef so voice turns always have full context.
+            const historySource = optsRef.current.conversationHistory ?? historyRef.current;
             ws.send(JSON.stringify({
               type: "config",
               subject: optsRef.current.subject,
               session_id: optsRef.current.sessionId,
               mime: "audio/pcm",
               sample_rate: 16000,
-              history: historyRef.current.map((m) => ({ role: m.role, content: m.content })),
+              history: historySource.map((m) => ({ role: m.role, content: m.content })),
             }));
             // Flush pre-speech buffer so the first words (captured before VAD confirmed
             // speech) are included — prevents the first syllable from being clipped

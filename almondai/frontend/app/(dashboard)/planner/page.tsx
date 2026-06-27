@@ -20,7 +20,6 @@ import {
   Target,
   Trash2,
   X,
-  Zap,
 } from "lucide-react";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -47,7 +46,6 @@ import {
 import { PlanGraph } from "@/components/graph/PlanGraph";
 import { SyllabusMapCanvas } from "@/components/syllabus/SyllabusMapCanvas";
 import { ClinicalMode } from "@/components/clinical/ClinicalMode";
-import { CrisisWarRoom } from "@/components/crisis/CrisisWarRoom";
 import { getSubjects, type SubjectProgress } from "@/lib/api/syllabus.api";
 import { useProfile } from "@/lib/hooks/useProfile";
 import { useSubscription } from "@/lib/hooks/useSubscription";
@@ -55,7 +53,7 @@ import { useAuthStore } from "@/lib/store/authStore";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-type ActiveTab = "map" | "plan" | "crisis" | "clinical";
+type ActiveTab = "map" | "plan" | "clinical";
 
 const examTypeOptions: Array<{ value: ExamType; label: string }> = [
   { value: "university", label: "University Exam" },
@@ -99,7 +97,6 @@ function buildTutorPrompt(topic: PlanTopic, day: PlanDay, category: string, minu
 const TABS: Array<{ key: ActiveTab; label: string; icon: React.ElementType; description: string }> = [
   { key: "map",      label: "Syllabus Map",     icon: Map,      description: "Visual knowledge graph" },
   { key: "plan",     label: "Planner",          icon: Calendar, description: "Adaptive study plan" },
-  { key: "crisis",   label: "Crisis Mode",      icon: Zap,      description: "Emergency prep" },
   { key: "clinical", label: "Clinical",         icon: Brain,    description: "Virtual ward simulation" },
 ];
 
@@ -681,7 +678,13 @@ function PlannerPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const rawTab = searchParams.get("tab") ?? "plan";
-  const activeTab: ActiveTab = (["map", "plan", "crisis", "clinical"] as ActiveTab[]).includes(rawTab as ActiveTab)
+
+  // Crisis Mode has its own dedicated page — redirect any lingering ?tab=crisis links
+  useEffect(() => {
+    if (rawTab === "crisis") router.replace("/crisis");
+  }, [rawTab]);
+
+  const activeTab: ActiveTab = (["map", "plan", "clinical"] as ActiveTab[]).includes(rawTab as ActiveTab)
     ? (rawTab as ActiveTab)
     : "plan";
 
@@ -699,11 +702,6 @@ function PlannerPageInner() {
         </div>
       )}
       {activeTab === "plan" && <PlannerContent />}
-      {activeTab === "crisis" && (
-        <div className="p-6">
-          <CrisisWarRoom />
-        </div>
-      )}
       {activeTab === "clinical" && (
         <div className="p-6">
           <ClinicalMode />

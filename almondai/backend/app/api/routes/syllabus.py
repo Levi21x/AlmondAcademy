@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from app.core.cache import cache_get, cache_set, make_key, syllabus_cache
 from app.core.database import get_supabase_admin_client
 from app.middleware.auth_middleware import require_auth
 from app.services.streak_service import StreakService
@@ -44,24 +45,32 @@ def get_subjects(
     client = get_supabase_admin_client()
     modes = _mode_filter(mode)
 
-    subject_query = client.table("syllabus_subjects").select("*").order("sort_order", desc=False)
-    if modes:
-        subject_query = subject_query.in_("mode", modes)
-    subjects_result = subject_query.execute()
-    subjects = subjects_result.data or []
+    subjects_key = make_key("subjects_list", str(modes))
+    subjects = cache_get(syllabus_cache, subjects_key)
+    if subjects is None:
+        subject_query = client.table("syllabus_subjects").select("*").order("sort_order", desc=False)
+        if modes:
+            subject_query = subject_query.in_("mode", modes)
+        subjects = subject_query.execute().data or []
+        cache_set(syllabus_cache, subjects_key, subjects)
 
     if not subjects:
         return _success([])
 
     subject_ids = [subject["id"] for subject in subjects]
 
-    topics_result = (
-        client.table("syllabus_topics")
-        .select("id,subject_id")
-        .in_("subject_id", subject_ids)
-        .execute()
-    )
-    topics = topics_result.data or []
+    topics_key = make_key("topics_for_subjects", str(sorted(subject_ids)))
+    topics = cache_get(syllabus_cache, topics_key)
+    if topics is None:
+        topics = (
+            client.table("syllabus_topics")
+            .select("id,subject_id")
+            .in_("subject_id", subject_ids)
+            .execute()
+            .data or []
+        )
+        cache_set(syllabus_cache, topics_key, topics)
+
     topic_ids = [topic["id"] for topic in topics]
 
     progress_rows: List[Dict[str, Any]] = []
@@ -116,20 +125,27 @@ def get_subjects(
 def get_subject_topics(subject_id: str, user=Depends(require_auth)) -> Dict[str, Any]:
     client = get_supabase_admin_client()
 
-    subject_result = client.table("syllabus_subjects").select("*").eq("id", subject_id).limit(1).execute()
-    if not subject_result.data:
-        raise HTTPException(status_code=404, detail={"error": True, "message": "Subject not found", "code": "SUBJECT_NOT_FOUND"})
+    subject_key = make_key("subject_detail", subject_id)
+    subject = cache_get(syllabus_cache, subject_key)
+    if subject is None:
+        subject_result = client.table("syllabus_subjects").select("*").eq("id", subject_id).limit(1).execute()
+        if not subject_result.data:
+            raise HTTPException(status_code=404, detail={"error": True, "message": "Subject not found", "code": "SUBJECT_NOT_FOUND"})
+        subject = subject_result.data[0]
+        cache_set(syllabus_cache, subject_key, subject)
 
-    subject = subject_result.data[0]
-
-    topics_result = (
-        client.table("syllabus_topics")
-        .select("*")
-        .eq("subject_id", subject_id)
-        .order("sort_order", desc=False)
-        .execute()
-    )
-    topics = topics_result.data or []
+    topics_key = make_key("topics_detail", subject_id)
+    topics = cache_get(syllabus_cache, topics_key)
+    if topics is None:
+        topics = (
+            client.table("syllabus_topics")
+            .select("*")
+            .eq("subject_id", subject_id)
+            .order("sort_order", desc=False)
+            .execute()
+            .data or []
+        )
+        cache_set(syllabus_cache, topics_key, topics)
 
     topic_ids = [topic["id"] for topic in topics]
     progress_by_topic: Dict[str, Dict[str, Any]] = {}

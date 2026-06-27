@@ -23,7 +23,7 @@ const QUICK_ACTIONS = [
   { id: "tutor",    href: "/ai-tutor",  label: "AI Tutor",      sub: "Ask anything",       icon: "brain"     as const, accent: "#d5c5a8", accentBg: "rgba(213,197,168,0.07)", accentBorder: "rgba(213,197,168,0.16)", emoji: "🧠" },
   { id: "practice", href: "/practice",  label: "Practice MCQs", sub: "10 questions daily",  icon: "clipboard" as const, accent: "#fff2de", accentBg: "rgba(255,242,222,0.05)", accentBorder: "rgba(255,242,222,0.14)", emoji: "📋" },
   { id: "syllabus", href: "/planner?tab=map",  label: "Syllabus Map",  sub: "Track your topics",   icon: "map"       as const, accent: "#cec5b9", accentBg: "rgba(206,197,185,0.06)", accentBorder: "rgba(206,197,185,0.16)", emoji: "🗺️" },
-  { id: "crisis",   href: "/planner?tab=crisis",    label: "Crisis Mode",   sub: "Emergency revision",  icon: "alert"     as const, accent: "#e4b4a0", accentBg: "rgba(228,180,160,0.07)", accentBorder: "rgba(228,180,160,0.18)", emoji: "⚡" },
+  { id: "crisis",   href: "/crisis",    label: "Crisis Mode",   sub: "Emergency revision",  icon: "alert"     as const, accent: "#e4b4a0", accentBg: "rgba(228,180,160,0.07)", accentBorder: "rgba(228,180,160,0.18)", emoji: "⚡" },
 ];
 
 const subjectColors = ["var(--aa-amber)","var(--aa-teal)","var(--aa-purple)","var(--aa-coral)","var(--aa-green)"];

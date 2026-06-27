@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 
 import { AlmondIcons, type AlmondIconName } from "@/components/ui/AlmondIcons";
 import { getAchievementSummary, type StreakMilestone } from "@/lib/api/achievements.api";
@@ -20,9 +21,9 @@ interface SidebarProps {
   isPremium?: boolean;
   userName?: string;
   collegeName?: string;
-  mode?: "MBBS" | "NEET-PG";
-  onModeChange?: (mode: "MBBS" | "NEET-PG") => void;
   onLogout?: () => void;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }
 
 interface NavItem {
@@ -35,18 +36,26 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { name: "Dashboard",    href: "/dashboard",    icon: "dashboard",  section: "core" },
-  { name: "AI Tutor",     href: "/ai-tutor",     icon: "brain",      section: "core" },
+  { name: "Dr. Almond",   href: "/ai-tutor",     icon: "brain",      section: "core" },
   { name: "Practice MCQs",href: "/practice",     icon: "clipboard",  section: "core" },
   { name: "Progress",     href: "/progress",     icon: "trending",   section: "core" },
   { name: "Planner",      href: "/planner",      icon: "calendar",   premium: true,  section: "core" },
-  { name: "Insights",     href: "/insights",     icon: "chart",      premium: true,  section: "core" },
-  { name: "Voice Agent",  href: "/voice-agent",  icon: "mic",                        section: "core" },
+  { name: "Crisis Mode",  href: "/crisis",       icon: "alert",      premium: true,  section: "core" },
   { name: "Visualise",    href: "/visualise",    icon: "image",      premium: true,  section: "core" },
   { name: "Profile",      href: "/profile",      icon: "user",                       section: "tools" },
   { name: "Settings",     href: "/settings",     icon: "settings",                   section: "tools" },
 ];
 
-export function Sidebar({ mobileOpen, onClose, isPremium = false, userName = "New Student", collegeName = "Your College", mode = "MBBS", onModeChange, onLogout }: SidebarProps) {
+export function Sidebar({
+  mobileOpen,
+  onClose,
+  isPremium = false,
+  userName = "New Student",
+  collegeName = "Your College",
+  onLogout,
+  collapsed = false,
+  onToggleCollapse,
+}: SidebarProps) {
   const pathname = usePathname();
   const fallbackToken = useAuthStore((state) => state.accessToken);
   const [almonds, setAlmonds] = useState<AlmondStatus | null>(null);
@@ -103,6 +112,57 @@ export function Sidebar({ mobileOpen, onClose, isPremium = false, userName = "Ne
   const groupedCore  = navItems.filter((item) => item.section === "core");
   const groupedTools = navItems.filter((item) => item.section === "tools");
 
+  const milestoneProgress = nextStreakMilestone
+    ? Math.min(((nextStreakMilestone.current_streak || 0) / Math.max(nextStreakMilestone.target_streak || 1, 1)) * 100, 100)
+    : 0;
+
+  // ── Collapsed nav icon ──
+  const collapsedNavIcon = (item: NavItem) => {
+    const active = pathname === item.href;
+    const Icon = AlmondIcons[item.icon];
+    return (
+      <Link
+        key={item.name}
+        href={item.href}
+        onClick={onClose}
+        title={item.name}
+        style={{
+          width: 40,
+          height: 40,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          borderRadius: 10,
+          textDecoration: "none",
+          transition: "all 0.16s ease",
+          color: active ? "var(--aa-amber)" : "var(--aa-text-3)",
+          background: active ? "rgba(213,197,168,0.08)" : "transparent",
+          boxShadow: active ? "inset 0 0 0 1px rgba(213,197,168,0.18)" : "none",
+          position: "relative",
+        }}
+        onMouseEnter={(e) => {
+          if (!active) {
+            e.currentTarget.style.background = "rgba(213,197,168,0.05)";
+            e.currentTarget.style.color = "var(--aa-text-2)";
+          }
+        }}
+        onMouseLeave={(e) => {
+          if (!active) {
+            e.currentTarget.style.background = "transparent";
+            e.currentTarget.style.color = "var(--aa-text-3)";
+          }
+        }}
+      >
+        <Icon size={18} style={{ color: active ? "var(--aa-amber)" : undefined }} />
+        {/* Dot badge for critical weakness on Progress icon */}
+        {item.name === "Progress" && criticalWeaknessCount > 0 ? (
+          <span style={{ position: "absolute", top: 6, right: 6, width: 6, height: 6, borderRadius: "50%", background: "var(--aa-coral)" }} />
+        ) : null}
+      </Link>
+    );
+  };
+
+  // ── Expanded nav link ──
   const navLink = (item: NavItem) => {
     const active = pathname === item.href;
     const Icon = AlmondIcons[item.icon];
@@ -140,10 +200,7 @@ export function Sidebar({ mobileOpen, onClose, isPremium = false, userName = "Ne
           }
         }}
       >
-        <Icon
-          size={16}
-          style={{ flexShrink: 0, color: active ? "var(--aa-amber)" : undefined }}
-        />
+        <Icon size={16} style={{ flexShrink: 0, color: active ? "var(--aa-amber)" : undefined }} />
         <span style={{ flex: 1 }}>{item.name}</span>
 
         {/* Almonds display on Practice MCQs */}
@@ -157,7 +214,7 @@ export function Sidebar({ mobileOpen, onClose, isPremium = false, userName = "Ne
         ) : null}
 
         {/* Critical weakness badge */}
-        {item.name === "Insights" && criticalWeaknessCount > 0 ? (
+        {item.name === "Progress" && criticalWeaknessCount > 0 ? (
           <span style={{ marginLeft: "auto", padding: "2px 7px", borderRadius: 100, background: "rgba(228,180,160,0.1)", border: "1px solid rgba(228,180,160,0.25)", fontSize: "0.65rem", fontWeight: 800, textTransform: "uppercase", color: "var(--aa-coral)", flexShrink: 0 }}>
             {criticalWeaknessCount}
           </span>
@@ -173,9 +230,31 @@ export function Sidebar({ mobileOpen, onClose, isPremium = false, userName = "Ne
     );
   };
 
-  const milestoneProgress = nextStreakMilestone
-    ? Math.min(((nextStreakMilestone.current_streak || 0) / Math.max(nextStreakMilestone.target_streak || 1, 1)) * 100, 100)
-    : 0;
+  const toggleBtn = (
+    <button
+      type="button"
+      onClick={onToggleCollapse}
+      title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+      className="hidden lg:flex"
+      style={{
+        width: 26,
+        height: 26,
+        borderRadius: "50%",
+        border: "1px solid rgba(213,197,168,0.18)",
+        background: "var(--aa-s2)",
+        color: "var(--aa-text-3)",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "pointer",
+        flexShrink: 0,
+        transition: "all 0.16s ease",
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.color = "var(--aa-amber)"; e.currentTarget.style.borderColor = "rgba(213,197,168,0.35)"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.color = "var(--aa-text-3)"; e.currentTarget.style.borderColor = "rgba(213,197,168,0.18)"; }}
+    >
+      {collapsed ? <ChevronRight size={13} strokeWidth={2} /> : <ChevronLeft size={13} strokeWidth={2} />}
+    </button>
+  );
 
   return (
     <>
@@ -188,49 +267,68 @@ export function Sidebar({ mobileOpen, onClose, isPremium = false, userName = "Ne
         />
       )}
 
-      <aside className={cn(
-        "fixed left-0 top-0 z-40 flex h-screen flex-col border-r transition-transform duration-300",
-        mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0",
-      )} style={{ width: 256, background: "var(--aa-s1)", borderColor: "rgba(53,53,52,0.8)" }}>
+      <aside
+        className={cn(
+          "fixed left-0 top-0 z-40 flex h-screen flex-col border-r",
+          mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0",
+          "transition-[width,transform] duration-300",
+          // Mobile always full width; desktop respects collapsed
+          "w-64",
+          collapsed ? "lg:w-[60px]" : "lg:w-64",
+        )}
+        style={{ background: "var(--aa-s1)", borderColor: "rgba(53,53,52,0.8)" }}
+      >
 
-        {/* ── Logo & mode toggle ── */}
-        <div style={{ padding: "20px 16px 16px", borderBottom: "1px solid rgba(53,53,52,0.8)" }}>
-          {/* Logo */}
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
-            <div style={{ width: 34, height: 34, borderRadius: 10, background: "linear-gradient(135deg,rgba(213,197,168,0.18),rgba(213,197,168,0.07))", border: "1px solid rgba(213,197,168,0.22)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, boxShadow: "0 0 16px rgba(213,197,168,0.2)", flexShrink: 0 }}>
-              🌰
+        {/* ── Logo ── */}
+        <div style={{
+          padding: collapsed ? "18px 0" : "20px 16px 16px",
+          borderBottom: "1px solid rgba(53,53,52,0.8)",
+          transition: "padding 0.25s ease",
+          overflow: "hidden",
+        }}>
+          {collapsed ? (
+            // Icon-only logo when collapsed (desktop only)
+            <div className="hidden lg:flex" style={{ flexDirection: "column", alignItems: "center", gap: 10 }}>
+              {toggleBtn}
+              <div style={{ fontSize: 20, lineHeight: 1 }}>🌰</div>
             </div>
-            <div>
-              <div style={{ fontFamily: "var(--aa-fd)", fontWeight: 800, fontSize: "1.05rem", letterSpacing: "-0.025em", color: "var(--aa-text-1)", lineHeight: 1.15 }}>
-                AlmondAI
-              </div>
-              <div style={{ fontSize: "0.62rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "rgba(255,242,222,0.35)", lineHeight: 1 }}>
-                Medical Intelligence
-              </div>
-            </div>
-          </div>
+          ) : null}
 
-          {/* Mode toggle */}
-          <div style={{ display: "flex", background: "#131313", border: "1px solid rgba(53,53,52,0.9)", borderRadius: 100, padding: "3px" }}>
-            {(["MBBS", "NEET-PG"] as const).map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => onModeChange?.(m)}
-                style={{ flex: 1, padding: "6px 8px", borderRadius: 100, fontSize: "0.72rem", fontWeight: 700, border: "none", cursor: "pointer", transition: "all 0.2s", letterSpacing: "0.02em",
-                  background: mode === m ? "rgba(213,197,168,0.1)" : "transparent",
-                  color: mode === m ? "var(--aa-amber)" : "var(--aa-text-3)",
-                  boxShadow: mode === m ? "inset 0 0 0 1px rgba(213,197,168,0.22)" : "none",
-                }}
-              >
-                {m}
-              </button>
-            ))}
+          {/* Full logo (always visible on mobile; visible on desktop when expanded) */}
+          <div className={cn(collapsed ? "lg:hidden" : "")} style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ width: 34, height: 34, borderRadius: 10, background: "linear-gradient(135deg,rgba(213,197,168,0.18),rgba(213,197,168,0.07))", border: "1px solid rgba(213,197,168,0.22)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, boxShadow: "0 0 16px rgba(213,197,168,0.2)", flexShrink: 0 }}>
+                🌰
+              </div>
+              <div>
+                <div style={{ fontFamily: "var(--aa-fd)", fontWeight: 800, fontSize: "1.05rem", letterSpacing: "-0.025em", color: "var(--aa-text-1)", lineHeight: 1.15 }}>
+                  AlmondAI
+                </div>
+                <div style={{ fontSize: "0.62rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "rgba(255,242,222,0.35)", lineHeight: 1 }}>
+                  Medical Intelligence
+                </div>
+              </div>
+            </div>
+            {toggleBtn}
           </div>
         </div>
 
         {/* ── Navigation ── */}
-        <nav className="no-scrollbar" style={{ flex: 1, overflowY: "auto", padding: "12px 8px", display: "flex", flexDirection: "column", gap: 0 }}>
+        {collapsed ? (
+          // Collapsed: icon rail (desktop only)
+          <nav className="no-scrollbar hidden lg:flex" style={{ flex: 1, overflowY: "auto", padding: "12px 10px", flexDirection: "column", alignItems: "center", gap: 4 }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+              {groupedCore.map(collapsedNavIcon)}
+            </div>
+            <div style={{ width: 28, height: 1, background: "rgba(53,53,52,0.8)", margin: "8px 0" }} />
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+              {groupedTools.map(collapsedNavIcon)}
+            </div>
+          </nav>
+        ) : null}
+
+        {/* Expanded nav (always on mobile, on desktop when not collapsed) */}
+        <nav className={cn("no-scrollbar", collapsed ? "lg:hidden" : "")} style={{ flex: 1, overflowY: "auto", padding: "12px 8px", display: "flex", flexDirection: "column", gap: 0 }}>
           <div style={{ fontSize: "0.6rem", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.12em", color: "rgba(143,136,126,0.7)", padding: "8px 10px 6px" }}>
             Core
           </div>
@@ -246,8 +344,38 @@ export function Sidebar({ mobileOpen, onClose, isPremium = false, userName = "Ne
           </div>
         </nav>
 
-        {/* ── Bottom section ── */}
-        <div style={{ borderTop: "1px solid rgba(53,53,52,0.8)", padding: "14px 12px 16px" }}>
+        {/* ── Bottom: collapsed ── */}
+        {collapsed ? (
+          <div className="hidden lg:flex" style={{ borderTop: "1px solid rgba(53,53,52,0.8)", padding: "12px 10px", flexDirection: "column", alignItems: "center", gap: 8 }}>
+            {/* Streak dot */}
+            <div title={`${streakCount} day streak`} style={{ display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>
+              🔥
+            </div>
+            {/* User avatar */}
+            <Link
+              href="/profile"
+              onClick={onClose}
+              title={userName}
+              style={{ width: 34, height: 34, borderRadius: "50%", background: "linear-gradient(135deg,rgba(53,53,52,0.9),rgba(42,37,32,0.8))", border: "1.5px solid rgba(213,197,168,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--aa-fd)", fontSize: "0.85rem", fontWeight: 800, color: "var(--aa-amber)", textDecoration: "none", flexShrink: 0 }}
+            >
+              {userName?.[0]?.toUpperCase() ?? "S"}
+            </Link>
+            {/* Logout */}
+            <button
+              type="button"
+              onClick={onLogout}
+              title="Logout"
+              style={{ width: 34, height: 34, borderRadius: 10, border: "none", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--aa-text-3)", transition: "all 0.18s" }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(228,180,160,0.06)"; e.currentTarget.style.color = "var(--aa-coral)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--aa-text-3)"; }}
+            >
+              <AlmondIcons.logout size={16} />
+            </button>
+          </div>
+        ) : null}
+
+        {/* ── Bottom: expanded ── */}
+        <div className={cn(collapsed ? "lg:hidden" : "")} style={{ borderTop: "1px solid rgba(53,53,52,0.8)", padding: "14px 12px 16px" }}>
           {/* Streak & almonds card */}
           <div style={{ background: "linear-gradient(135deg,rgba(213,197,168,0.07),rgba(213,197,168,0.03))", border: "1px solid rgba(213,197,168,0.12)", borderRadius: 14, padding: "12px 14px", marginBottom: 10 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: nextStreakMilestone ? 10 : 0 }}>

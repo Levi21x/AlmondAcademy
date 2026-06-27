@@ -7,16 +7,21 @@ import { useRouter, useSearchParams } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { AnimatePresence } from "framer-motion";
+
 import { ChatMessage } from "@/components/doubt-solver/ChatMessage";
+import { VoiceDock } from "@/components/doubt-solver/VoiceDock";
 import { Toast, ToastVariant } from "@/components/ui/Toast";
 import { PromptInputBox } from "@/components/ui/ai-prompt-box";
 import { askQuestion, ConversationTurn, getUsageStatus, TutorAction, UsageStatus } from "@/lib/api/doubt_solver.api";
 import { updateTopicProgress } from "@/lib/api/syllabus.api";
-import { ChatSession, createSession, deleteSession, getSession, getSessions } from "@/lib/api/chat_history.api";
+import { ChatSession, createSession, deleteSession, getSession, getSessions, saveMessage } from "@/lib/api/chat_history.api";
 import { getMemoryInsights } from "@/lib/api/memory.api";
+import type { VoiceMessage } from "@/lib/api/voice.api";
 import { useProfile } from "@/lib/hooks/useProfile";
 import { useSubjectList } from "@/lib/hooks/useSubjectList";
 import { useVoiceInput } from "@/lib/hooks/useVoiceInput";
+import { useVoiceSession } from "@/lib/hooks/useVoiceSession";
 import { getSupabaseClient } from "@/lib/supabase/client";
 import { useAuthStore } from "@/lib/store/authStore";
 
@@ -27,6 +32,12 @@ interface Message {
   searchUsed?: boolean;
   syllabusUpdatedTopic?: string;
   actions?: TutorAction[];
+  /** true when this message came through the continuous voice session */
+  voiceSource?: boolean;
+}
+
+function generateVoiceSessionId() {
+  return `vs_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
 interface ToastState {
@@ -194,11 +205,20 @@ export default function AITutorPage() {
   const [lastTopicDiscussed, setLastTopicDiscussed] = useState("");
   const [showHighYieldBanner, setShowHighYieldBanner] = useState(false);
   const [isAutoSendingPrefill, setIsAutoSendingPrefill] = useState(false);
+
+  // ─── Continuous voice mode state ─────────────────────────────────────────
+  const [isVoiceMode, setIsVoiceMode] = useState(false);
+  const [voiceSessionId, setVoiceSessionId] = useState(generateVoiceSessionId);
+
   const abortControllerRef = useRef<AbortController | null>(null);
   const autoSentRef = useRef(false);
   const prefillAutoSentRef = useRef(false);
   const messagesScrollRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  // Kept in sync with activeSessionId state so async voice callbacks always see the latest value
+  const activeSessionIdRef = useRef<string | null>(null);
+  // Guards against double session-creation when user + assistant voice messages fire in quick succession
+  const pendingVoiceSessionRef = useRef<Promise<string> | null>(null);
   const voiceInput = useVoiceInput();
   const {
     isListening: voiceListening,
@@ -210,6 +230,97 @@ export default function AITutorPage() {
     isSupported: voiceSupported,
     error: voiceError,
   } = voiceInput;
+
+  // ─── Continuous voice session (Dr. Almond speaks back) ───────────────────
+  // Build a live view of messages in VoiceMessage format so the voice engine
+  // always has full shared context when onSpeechRealStart fires.
+  const voiceConversationHistory = useCallback((): VoiceMessage[] => {
+    return messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+      timestamp: new Date().toISOString(),
+    }));
+  }, [messages]);
+
+  const handleVoiceMessage = useCallback(async (msg: VoiceMessage) => {
+    setMessages((prev) => [
+      ...prev,
+      { id: createId(), role: msg.role, content: msg.content, voiceSource: true },
+    ]);
+
+    const supabase = getSupabaseClient();
+    const { data: { session } } = await supabase.auth.getSession();
+    const activeToken = session?.access_token ?? token;
+    if (!activeToken) return;
+
+    try {
+      // Create a session if one doesn't exist yet (handles starting voice with no prior text chat)
+      if (!activeSessionIdRef.current) {
+        if (!pendingVoiceSessionRef.current) {
+          pendingVoiceSessionRef.current = createSession(activeToken, subject, profile?.mode ?? undefined).then(
+            (created) => {
+              activeSessionIdRef.current = created.id;
+              setActiveSessionId(created.id);
+              pendingVoiceSessionRef.current = null;
+              return created.id;
+            },
+          );
+        }
+        await pendingVoiceSessionRef.current;
+      }
+      await saveMessage(activeToken, activeSessionIdRef.current!, msg.role, msg.content);
+      // Refresh session list after assistant reply so the sidebar preview updates
+      if (msg.role === "assistant") {
+        getSessions(activeToken).then(setSessions).catch(() => {});
+      }
+    } catch {
+      // Non-critical — voice conversation continues even if persist fails
+    }
+  }, [profile, subject, token]);
+
+  const {
+    state:             voiceState,
+    audioLevel:        voiceAudioLevel,
+    partialTranscript: voicePartialTranscript,
+    liveCaption:       voiceLiveCaption,
+    error:             voiceSessionError,
+    startSession:      startVoiceSession,
+    stopSession:       stopVoiceSession,
+  } = useVoiceSession({
+    authToken:           token ?? "",
+    subject,
+    sessionId:           voiceSessionId,
+    onMessage:           handleVoiceMessage,
+    onSessionId:         setVoiceSessionId,
+    conversationHistory: voiceConversationHistory(),
+  });
+
+  const handleVoiceModeToggle = useCallback(async () => {
+    if (isVoiceMode) {
+      stopVoiceSession();
+      setIsVoiceMode(false);
+      return;
+    }
+    setIsVoiceMode(true);
+    await startVoiceSession();
+  }, [isVoiceMode, startVoiceSession, stopVoiceSession]);
+
+  const handleStopVoiceMode = useCallback(() => {
+    stopVoiceSession();
+    setIsVoiceMode(false);
+  }, [stopVoiceSession]);
+
+  // Auto-stop voice mode if the session drops to inactive unexpectedly (error / WS close)
+  useEffect(() => {
+    if (isVoiceMode && voiceState === "inactive" && !voiceSessionError) {
+      setIsVoiceMode(false);
+    }
+  }, [isVoiceMode, voiceState, voiceSessionError]);
+
+  // Keep ref in sync so async voice persist callbacks always see the latest session ID
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
 
   const querySubject = (searchParams.get("subject") || "").trim();
   const queryTopic = (searchParams.get("topic") || "").trim();
@@ -336,6 +447,8 @@ export default function AITutorPage() {
 
   const handleNewConversation = useCallback(() => {
     setActiveSessionId(null);
+    activeSessionIdRef.current = null;
+    pendingVoiceSessionRef.current = null;
     setMessages([]);
     setStreamingContent("");
     setIsStreaming(false);
@@ -518,7 +631,7 @@ export default function AITutorPage() {
           {
             id: assistantMessageId,
             role: "assistant",
-            content: message || "AlmondAI could not process this question right now.",
+            content: message || "Dr. Almond could not process this question right now.",
           },
         ]);
         setToast({ message, variant: "error" });
@@ -799,7 +912,7 @@ export default function AITutorPage() {
             >
               <Menu className="h-4 w-4" strokeWidth={1.9} />
             </button>
-            <h1 className="text-sm font-semibold text-[#fff2de]">AI Tutor</h1>
+            <h1 className="text-sm font-semibold text-[#fff2de]">Dr. Almond</h1>
             <div className="w-9" />
           </div>
 
@@ -808,7 +921,7 @@ export default function AITutorPage() {
               <div style={{ maxWidth: 896, width: "100%", margin: "0 auto 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, borderRadius: 12, border: "1px solid rgba(230,200,122,0.25)", background: "linear-gradient(90deg,rgba(42,37,26,0.9),rgba(38,34,22,0.8))", padding: "10px 16px" }}>
                 <p style={{ fontFamily: "var(--aa-fb)", fontSize: "0.875rem", color: "#e6c87a", display: "flex", alignItems: "center", gap: 8 }}>
                   <span>⚡</span>
-                  <span><strong>High-Yield Mode</strong> — AlmondAI is explaining with clinical reasoning and exam focus</span>
+                  <span><strong>High-Yield Mode</strong> — Dr. Almond is explaining with clinical reasoning and exam focus</span>
                 </p>
                 <button
                   type="button"
@@ -825,7 +938,7 @@ export default function AITutorPage() {
 
             {sourceParam === "dashboard" ? (
               <div className="mx-auto mb-4 w-full max-w-4xl rounded-xl border border-[#4c463d] bg-[#1f1f1f] px-4 py-3 text-sm text-[#d5c5a8]">
-                Your high-yield study session has started. Ask AlmondAI anything — what topic would you like to master today?
+                Your high-yield study session has started. Ask Dr. Almond anything — what topic would you like to master today?
               </div>
             ) : null}
 
@@ -891,6 +1004,13 @@ export default function AITutorPage() {
                           </span>
                         </div>
                       ) : null}
+                      {message.voiceSource ? (
+                        <div className="mb-1.5 flex items-center gap-1.5">
+                          <span className="rounded-full bg-[#2a2520] px-2.5 py-0.5 text-[10px] text-[#d5c5a8]">
+                            🎤 Voice
+                          </span>
+                        </div>
+                      ) : null}
                       <ChatMessage
                         role={message.role}
                         content={cleanedMessageContent}
@@ -944,7 +1064,7 @@ export default function AITutorPage() {
                       <div className="flex h-6 w-6 items-center justify-center rounded bg-[#d5c5a8]/10">
                         <Brain size={14} className="text-[#d5c5a8]" strokeWidth={1.8} />
                       </div>
-                      <span className="uppercase tracking-widest">AlmondAI</span>
+                      <span className="uppercase tracking-widest">Dr. Almond</span>
                       <span className="ml-1 inline-flex items-center gap-1">
                         <span className="h-1 w-1 animate-bounce rounded-full bg-[#d5c5a8]" style={{ animationDelay: "0ms" }} />
                         <span className="h-1 w-1 animate-bounce rounded-full bg-[#d5c5a8]" style={{ animationDelay: "150ms" }} />
@@ -982,6 +1102,21 @@ export default function AITutorPage() {
                   </span>
                 </div>
               ) : null}
+
+              {/* Voice Dock — slides up above the input when voice mode is active */}
+              <AnimatePresence>
+                {isVoiceMode ? (
+                  <VoiceDock
+                    state={voiceState}
+                    audioLevel={voiceAudioLevel}
+                    liveCaption={voiceLiveCaption}
+                    partialTranscript={voicePartialTranscript}
+                    error={voiceSessionError}
+                    onStop={handleStopVoiceMode}
+                  />
+                ) : null}
+              </AnimatePresence>
+
               <PromptInputBox
                 onSend={(message) => {
                   if (message.trim()) {
@@ -993,7 +1128,7 @@ export default function AITutorPage() {
                 disabled={limitReached}
                 draftMessage={draftMessage}
                 onDraftConsumed={() => setDraftMessage("")}
-                placeholder="Ask AlmondAI anything about medicine..."
+                placeholder="Ask Dr. Almond anything about medicine..."
                 isListening={voiceListening}
                 interimTranscript={interimTranscript}
                 onMicClick={handleMicToggle}
@@ -1002,9 +1137,11 @@ export default function AITutorPage() {
                   setIsSearchMode(m === "search");
                 }}
                 acceptAttachments
+                onVoiceModeClick={() => { void handleVoiceModeToggle(); }}
+                isVoiceMode={isVoiceMode}
               />
               <p className="mt-2 text-center text-xs text-[#b7ada0]">
-                AlmondAI can make mistakes. Verify important medical information.
+                Dr. Almond can make mistakes. Verify important medical information.
               </p>
             </div>
           </div>

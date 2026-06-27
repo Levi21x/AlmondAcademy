@@ -9,6 +9,7 @@ import { getNewAchievements, type AchievementItem } from "@/lib/api/achievements
 import { useAuth } from "@/lib/hooks/useAuth";
 import { useAuthStore } from "@/lib/store/authStore";
 import { useSubscription } from "@/lib/hooks/useSubscription";
+import { cn } from "@/lib/utils/helpers";
 
 interface DashboardShellProps {
   children: React.ReactNode;
@@ -19,7 +20,12 @@ interface DashboardShellProps {
 
 export function DashboardShell({ children, userName, collegeName, planType }: DashboardShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [mode, setMode] = useState<"MBBS" | "NEET-PG">("MBBS");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    if (typeof window !== "undefined") {
+      return window.localStorage.getItem("aa-sidebar-collapsed") === "true";
+    }
+    return false;
+  });
   const [unlockToast, setUnlockToast] = useState<AchievementItem | null>(null);
   const unlockQueueRef = useRef<AchievementItem[]>([]);
   const token = useAuthStore((state) => state.accessToken);
@@ -27,6 +33,14 @@ export function DashboardShell({ children, userName, collegeName, planType }: Da
   const { isPremium } = useSubscription();
 
   const resolvedPlanType = isPremium ? "Premium" : planType || "Free Plan";
+
+  const handleToggleCollapse = () => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      window.localStorage.setItem("aa-sidebar-collapsed", String(next));
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (!token) {
@@ -109,13 +123,18 @@ export function DashboardShell({ children, userName, collegeName, planType }: Da
         collegeName={collegeName}
         planType={resolvedPlanType}
         isPremium={isPremium}
-        mode={mode}
-        onModeChange={setMode}
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={handleToggleCollapse}
         onLogout={() => {
           void signOut();
         }}
       />
-      <main className="relative overflow-y-auto bg-[var(--aa-bg)] px-4 pb-8 pt-4 lg:ml-64 lg:px-10 lg:pt-8">
+      <main
+        className={cn(
+          "relative overflow-y-auto bg-[var(--aa-bg)] px-4 pb-8 pt-4 lg:px-10 lg:pt-8 transition-[margin] duration-300",
+          sidebarCollapsed ? "lg:ml-[60px]" : "lg:ml-64",
+        )}
+      >
         <div className="mx-auto w-full max-w-[1080px]">{children}</div>
       </main>
       {unlockToast ? (

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 import chromadb
 
+from app.core.cache import cache_get, cache_set, make_key, rag_cache
 from app.core.config import get_settings
 from app.services.rag.embeddings import EmbeddingManager, get_embedding_manager
 
@@ -48,6 +49,11 @@ class ChromaVectorStore:
         subject_filter: Optional[str] = None,
         where: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
+        cache_key = make_key("rag_search", query, subject_filter, n_results, str(where))
+        cached = cache_get(rag_cache, cache_key)
+        if cached is not None:
+            return cached
+
         effective_where = where
         if effective_where is None and subject_filter:
             effective_where = {"subject": subject_filter}
@@ -73,6 +79,8 @@ class ChromaVectorStore:
                     "distance": float(distance),
                 }
             )
+
+        cache_set(rag_cache, cache_key, results)
         return results
 
     def get_collection_stats(self) -> Dict[str, Any]:

@@ -12,8 +12,10 @@ from pydantic import BaseModel, Field
 from app.core.database import get_supabase_admin_client
 from app.middleware.auth_middleware import require_auth
 from app.services.auth_service import AuthService
+from app.services.crisis.chief_resident import build_chief_resident_briefing, stream_chief_resident_opening
 from app.services.crisis.crisis_generator import generate_crisis_plan, generate_war_room_strategy
 from app.services.crisis.last_night import generate_last_night_plan
+from app.services.crisis.orchestrator import activate_war_room
 from app.services.crisis.panic import detect_panic
 from app.services.crisis.readiness import compute_readiness_score
 from app.services.llm.openrouter_client import OPENROUTER_MODELS, OpenRouterLLMClient
@@ -873,3 +875,265 @@ def get_ask_history(session_id: str, user=Depends(require_auth)):
         or []
     )
     return _success(rows)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# War Room v2 — multi-agent activation (SSE)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/activate/stream")
+async def activate_crisis_stream(
+    payload: ActivateCrisisPayload,
+    user=Depends(require_auth),
+    service: AuthService = Depends(AuthService),
+):
+    """
+    SSE endpoint that activates the full War Room:
+    - Assembles all agents concurrently via orchestrator
+    - Streams Chief Resident opening in real-time
+    - Creates session + queues deep-agent jobs
+    """
+    client = get_supabase_admin_client()
+    user_id = user["user_id"]
+
+    days_remaining = (payload.exam_date - date.today()).days
+    if days_remaining < 1:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": True, "message": "Exam date must be in the future", "code": "INVALID_EXAM_DATE"},
+        )
+
+    profile = service.get_profile(user_id)
+    if not profile:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": True, "message": "Profile not found", "code": "PROFILE_NOT_FOUND"},
+        )
+
+    student_category = profile.get("student_category") or "sprinter"
+
+    # Snapshot all DB state before streaming starts
+    subject_progress = _get_subject_progress(
+        client=client, user_id=user_id, selected_subjects=payload.subjects
+    )
+    topic_data = _get_topic_level_data(
+        client=client, user_id=user_id, selected_subjects=payload.subjects
+    )
+    weakness_readiness = _get_weakness_readiness(client=client, user_id=user_id)
+
+    readiness_result = compute_readiness_score(
+        subject_progress=subject_progress,
+        days_remaining=days_remaining,
+        hours_per_day=payload.available_hours_per_day,
+        weakness_readiness=weakness_readiness,
+        stress_level=payload.stress_level,
+    )
+    panic_result = detect_panic(
+        stress_level=payload.stress_level,
+        readiness_score=readiness_result["readiness_score"],
+        days_remaining=days_remaining,
+        message=payload.message,
+    )
+
+    # Fetch jar items for this (possibly pre-existing) session
+    jar_items: List[Dict[str, Any]] = []
+    existing_session = _get_active_session(client=client, user_id=user_id)
+    if existing_session:
+        jar_rows = (
+            client.table("almond_jar_items")
+            .select("*")
+            .eq("session_id", existing_session["id"])
+            .eq("user_id", user_id)
+            .eq("is_processed", True)
+            .execute()
+            .data
+            or []
+        )
+        jar_items = jar_rows
+
+    async def event_stream() -> AsyncGenerator[str, None]:
+        try:
+            # Phase 1: Announce team formation
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Assembling your War Room team...'})}\n\n"
+            await asyncio.sleep(0.1)
+
+            # Phase 2: Run all agents
+            war_room = await activate_war_room(
+                exam_name=payload.exam_name,
+                exam_date=payload.exam_date,
+                days_remaining=days_remaining,
+                hours_per_day=payload.available_hours_per_day,
+                subjects=payload.subjects,
+                preparation_level=payload.preparation_level,
+                student_category=student_category,
+                topic_data=topic_data,
+                subject_progress=subject_progress,
+                readiness_result=readiness_result,
+                panic_result=panic_result,
+                jar_items=jar_items,
+                stress_level=payload.stress_level,
+                user_id=user_id,
+                session_id=existing_session["id"] if existing_session else "",
+            )
+
+            # Phase 3: Announce agent results
+            yield f"data: {json.dumps({'type': 'agents_ready', 'results': war_room['agent_results']})}\n\n"
+            await asyncio.sleep(0.1)
+
+            # Phase 4: Persist session
+            crisis_plan = war_room["crisis_plan"]
+            strategy = war_room["strategy"]
+
+            client.table("crisis_sessions").update({"is_active": False}).eq("user_id", user_id).eq("is_active", True).execute()
+
+            activation = _get_activation_row(client=client, user_id=user_id)
+
+            inserted = (
+                client.table("crisis_sessions")
+                .insert({
+                    "user_id": user_id,
+                    "exam_name": payload.exam_name,
+                    "exam_date": payload.exam_date.isoformat(),
+                    "days_remaining": days_remaining,
+                    "subjects": payload.subjects,
+                    "preparation_level": payload.preparation_level,
+                    "available_hours_per_day": payload.available_hours_per_day,
+                    "stress_level": payload.stress_level,
+                    "mode": payload.mode,
+                    "readiness_score": readiness_result.get("readiness_score", 0),
+                    "strategy": strategy,
+                    "crisis_plan": crisis_plan,
+                    "current_day": 1,
+                    "is_active": True,
+                    "jar_enabled": True,
+                    "team_status": "active",
+                })
+                .execute()
+            )
+            session_id = inserted.data[0]["id"] if inserted.data else None
+
+            if session_id:
+                topic_rows = _extract_topics_from_plan(plan=crisis_plan)
+                if topic_rows:
+                    client.table("crisis_topic_progress").insert(
+                        [{"session_id": session_id, "user_id": user_id, **row} for row in topic_rows]
+                    ).execute()
+
+                # Queue deep-agent jobs (non-blocking)
+                deep_jobs = [
+                    {"session_id": session_id, "user_id": user_id, "job_type": "mock_paper", "payload": {"exam_name": payload.exam_name, "subjects": payload.subjects}},
+                    {"session_id": session_id, "user_id": user_id, "job_type": "cheat_sheet", "payload": {"exam_name": payload.exam_name, "subjects": payload.subjects}},
+                    {"session_id": session_id, "user_id": user_id, "job_type": "knowing_vs_scoring", "payload": {"exam_name": payload.exam_name}},
+                ]
+                try:
+                    client.table("almond_jar_jobs").insert(deep_jobs).execute()
+                except Exception:
+                    pass
+
+                # Update activation counter
+                client.table("crisis_activations").update({
+                    "total_activations": int(activation.get("total_activations", 0) or 0) + 1,
+                }).eq("id", activation["id"]).execute()
+
+                yield f"data: {json.dumps({'type': 'session_created', 'session_id': session_id})}\n\n"
+                await asyncio.sleep(0.05)
+
+            # Phase 5: Stream Chief Resident opening
+            yield f"data: {json.dumps({'type': 'chief_resident_start'})}\n\n"
+            async for chunk in stream_chief_resident_opening(war_room):
+                yield f"data: {json.dumps({'type': 'chief_resident_text', 'text': chunk})}\n\n"
+
+        except Exception as exc:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+        finally:
+            yield "data: [CRISIS_STREAM_END]\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/sessions/{session_id}/live")
+async def session_live_feed(session_id: str, user=Depends(require_auth)):
+    """
+    Long-lived SSE feed for nudges and artifact-ready notifications.
+    Client connects once and receives events as they are produced by the background worker.
+    Polls every 15s; closes after 10 minutes of inactivity.
+    """
+    client = get_supabase_admin_client()
+    user_id = user["user_id"]
+
+    rows = (
+        client.table("crisis_sessions")
+        .select("id")
+        .eq("id", session_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not rows:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": True, "message": "Session not found", "code": "SESSION_NOT_FOUND"},
+        )
+
+    async def live_events() -> AsyncGenerator[str, None]:
+        poll_count = 0
+        max_polls = 40  # 40 × 15s = 10 min
+
+        while poll_count < max_polls:
+            poll_count += 1
+            await asyncio.sleep(15)
+
+            try:
+                # Check for new unread artifacts
+                artifacts = (
+                    client.table("almond_jar_artifacts")
+                    .select("id,artifact_type,title,created_at")
+                    .eq("session_id", session_id)
+                    .eq("user_id", user_id)
+                    .eq("is_read", False)
+                    .execute()
+                    .data
+                    or []
+                )
+                if artifacts:
+                    yield f"data: {json.dumps({'type': 'artifacts_ready', 'artifacts': artifacts})}\n\n"
+
+                # Check for pending nudges to fire
+                from datetime import datetime, timezone
+                now = datetime.now(timezone.utc).isoformat()
+                nudges = (
+                    client.table("crisis_nudges")
+                    .select("id,nudge_type,content")
+                    .eq("session_id", session_id)
+                    .eq("user_id", user_id)
+                    .eq("is_sent", False)
+                    .lte("scheduled_for", now)
+                    .execute()
+                    .data
+                    or []
+                )
+                for nudge in nudges:
+                    yield f"data: {json.dumps({'type': 'nudge', 'nudge': nudge})}\n\n"
+                    client.table("crisis_nudges").update({"is_sent": True, "sent_at": now}).eq("id", nudge["id"]).execute()
+
+                # Heartbeat
+                yield f"data: {json.dumps({'type': 'ping'})}\n\n"
+
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                yield f"data: {json.dumps({'type': 'ping'})}\n\n"
+
+        yield "data: [FEED_CLOSED]\n\n"
+
+    return StreamingResponse(
+        live_events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

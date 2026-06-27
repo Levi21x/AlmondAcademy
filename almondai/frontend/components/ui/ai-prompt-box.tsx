@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { ArrowUp, BarChart2, Globe, Layers, Mic, Paperclip, X } from "lucide-react";
+import { ArrowUp, BarChart2, Globe, Layers, Mic, Paperclip, Radio, X } from "lucide-react";
 
 type PromptMode = "none" | "search" | "deep-explain" | "visualise";
 
@@ -21,6 +21,10 @@ interface PromptInputBoxProps {
   speechSupported?: boolean;
   onModeChange?: (mode: PromptMode) => void;
   acceptAttachments?: boolean;
+  /** Activates/deactivates continuous voice mode (separate from dictation mic) */
+  onVoiceModeClick?: () => void;
+  /** Whether continuous voice mode is currently active */
+  isVoiceMode?: boolean;
 }
 
 function ToolButton({
@@ -68,7 +72,7 @@ export function PromptInputBox({
   onSend,
   isLoading = false,
   onStop,
-  placeholder = "Ask AlmondAI anything about medicine...",
+  placeholder = "Ask Dr. Almond anything about medicine...",
   disabled = false,
   draftMessage,
   onDraftConsumed,
@@ -78,6 +82,8 @@ export function PromptInputBox({
   speechSupported = false,
   onModeChange,
   acceptAttachments = false,
+  onVoiceModeClick,
+  isVoiceMode = false,
 }: PromptInputBoxProps) {
   const [value, setValue] = useState("");
   const [mode, setMode] = useState<PromptMode>("none");
@@ -204,6 +210,43 @@ export function PromptInputBox({
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Continuous voice mode button */}
+            {onVoiceModeClick ? (
+              <Tooltip.Root>
+                <Tooltip.Trigger asChild>
+                  <button
+                    type="button"
+                    disabled={disabled || isLoading}
+                    onClick={onVoiceModeClick}
+                    className={`inline-flex h-9 w-9 items-center justify-center rounded-full border transition ${
+                      isVoiceMode
+                        ? "border-[var(--aa-amber-border)] bg-[var(--aa-amber-bg)] text-[var(--aa-amber)] shadow-[0_0_0_3px_rgba(213,197,168,0.12)] animate-pulse"
+                        : "border-[#4c463d] bg-[#1a1a1a] text-[#e5e2e1] hover:border-[var(--aa-amber-border)] hover:text-[var(--aa-amber)]"
+                    } disabled:cursor-not-allowed disabled:opacity-40`}
+                    aria-label={isVoiceMode ? "Stop voice mode" : "Start voice mode (Dr. Almond speaks back)"}
+                  >
+                    <AnimatePresence mode="wait" initial={false}>
+                      <motion.span
+                        key={isVoiceMode ? "active" : "idle"}
+                        initial={{ opacity: 0, scale: 0.8 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.8 }}
+                        transition={{ duration: 0.13 }}
+                      >
+                        <Radio size={17} strokeWidth={1.9} />
+                      </motion.span>
+                    </AnimatePresence>
+                  </button>
+                </Tooltip.Trigger>
+                <Tooltip.Portal>
+                  <Tooltip.Content className="z-50 rounded-md border border-[#4c463d] bg-[#1a1a1a] px-2 py-1 text-xs text-[#e5e2e1]" sideOffset={6}>
+                    {isVoiceMode ? "Stop voice mode" : "Voice mode — Dr. Almond listens & speaks back"}
+                    <Tooltip.Arrow className="fill-[#1a1a1a]" />
+                  </Tooltip.Content>
+                </Tooltip.Portal>
+              </Tooltip.Root>
+            ) : null}
+
             {/* Attach button */}
             {acceptAttachments && (
               <>

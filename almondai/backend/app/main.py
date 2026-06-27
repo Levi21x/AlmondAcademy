@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI
@@ -14,6 +15,7 @@ from app.api.routes.memory import router as memory_router
 from app.api.routes.voice import router as voice_router
 from app.api.routes.mcq import router as mcq_router
 from app.api.routes.crisis import router as crisis_router
+from app.api.routes.jar import router as jar_router
 from app.api.routes.weakness import router as weakness_router
 from app.api.routes.visuals import router as visuals_router
 from app.api.routes.payments import router as payments_router
@@ -22,9 +24,21 @@ from app.api.routes.feedback import router as feedback_router
 from app.api.routes.clinical import router as clinical_router
 from app.core.config import clear_settings_cache, get_settings
 from app.middleware.error_handler import register_error_handlers
+from app.services.crisis.background_worker import start_background_worker, stop_background_worker
 
 settings = get_settings()
-app = FastAPI(title=settings.app_name, version="1.0.0")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    clear_settings_cache()
+    worker_task = start_background_worker()
+    yield
+    stop_background_worker()
+    worker_task.cancel()
+
+
+app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
 
 dev_origins = ["http://localhost:3000", "http://localhost:3001"]
 allowed_origins = list(dict.fromkeys([*settings.cors_origins, *dev_origins]))
@@ -50,17 +64,13 @@ app.include_router(memory_router)
 app.include_router(voice_router)
 app.include_router(mcq_router)
 app.include_router(crisis_router)
+app.include_router(jar_router)
 app.include_router(weakness_router)
 app.include_router(visuals_router)
 app.include_router(payments_router)
 app.include_router(peer_router)
 app.include_router(feedback_router)
 app.include_router(clinical_router)
-
-
-@app.on_event("startup")
-async def refresh_settings_cache_on_startup() -> None:
-    clear_settings_cache()
 
 
 @app.options("/{rest_of_path:path}")
